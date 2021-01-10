@@ -80,7 +80,7 @@ class Tensor(val data: DataFrame,
 		(for (i <- dimensionsName.indices) yield {
 			var df = spark.createDataFrame(kruskal.A(i).toCoordinateMatrix().entries).toDF("dimIndex", "rank", "val")
 			if (dimensionsIndex.isDefined) {
-				df = df.join(dimensionsIndex.get(i)).select("dimValue", "rank", "val")
+				df = df.join(dimensionsIndex.get(i), "dimIndex").select("dimValue", "rank", "val")
 				df = df.withColumnRenamed("dimValue", dimensionsName(i))
 			} else {
 				df = df.withColumnRenamed("dimIndex", dimensionsName(i))
