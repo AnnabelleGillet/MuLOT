@@ -75,10 +75,11 @@ class Tensor(val data: DataFrame,
 	 *         This [[DataFrame]] has 3 column: one with the name of the original dimension, one with the value of the rank,
 	 *         and the last one with the value found with the CP.
 	 */
-	def runCPALS(rank: Int, nbIterations: Int = 5, checkpoint: Boolean = false): Map[String, DataFrame] = {
-		val kruskal = CPALS.computeSparkCPALS(this, rank, nbIterations, checkpoint)
+	def runCPALS(rank: Int, nbIterations: Int = 25, norm: String = CPALS.NORM_L1, minFms: Double = 0.99, checkpoint: Boolean = false): Map[String, DataFrame] = {
+		val kruskal = CPALS.computeSparkCPALS(this, rank, norm, nbIterations, minFms, checkpoint)
+		
 		(for (i <- dimensionsName.indices) yield {
-			var df = spark.createDataFrame(kruskal.A(i).toCoordinateMatrix().entries).toDF("dimIndex", "rank", "val")
+			var df = spark.createDataFrame(kruskal.A(i).toCoordinateMatrixWithZeros().entries).toDF("dimIndex", "rank", "val")
 			if (dimensionsIndex.isDefined) {
 				df = df.join(dimensionsIndex.get(i), "dimIndex").select("dimValue", "rank", "val")
 				df = df.withColumnRenamed("dimValue", dimensionsName(i))
@@ -138,14 +139,14 @@ object Tensor {
 			if (columnName != valueColumnName) {
 				dimensionsName :+= columnName
 				tensorData = tensorData
-					.withColumn(columnName, col(columnName)cast(org.apache.spark.sql.types.LongType))
+					.withColumn(columnName, col(columnName).cast(org.apache.spark.sql.types.LongType))
 					.withColumnRenamed(columnName, s"row_$i")
 				i += 1
 			}
 		}
 		
 		tensorData = tensorData
-			.withColumn(valueColumnName, col(valueColumnName)cast(org.apache.spark.sql.types.DoubleType))
+			.withColumn(valueColumnName, col(valueColumnName).cast(org.apache.spark.sql.types.DoubleType))
 		
 		new Tensor(tensorData,
 			data.columns.size - 1,

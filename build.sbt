@@ -1,4 +1,4 @@
-name := "SparkTensorDecomposition"
+name := "MuLOT"
 
 version := "0.1"
 

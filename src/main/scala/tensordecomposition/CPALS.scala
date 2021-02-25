@@ -1,71 +1,93 @@
 package tensordecomposition
 
-import org.apache.spark.mllib.linalg.distributed.ExtendedBlockMatrix
+import org.apache.spark.mllib.linalg.distributed.{ExtendedBlockMatrix}
 import org.apache.spark.mllib.linalg.distributed.ExtendedBlockMatrix._
 import org.apache.spark.sql.SparkSession
 
 object CPALS {
+	val NORM_L1 = "l1"
+	val NORM_L2 = "l2"
 	case class Kruskal(A: Array[ExtendedBlockMatrix], lambdas: Array[Double])
 	
 	/**
 	 * Computes the CAMDECOMP PARAFAC decomposition on the tensor.
 	 */
-	def computeSparkCPALS(tensor: Tensor, rank: Int, maxIterations: Int = 25, checkpoint: Boolean = false)
+	def computeSparkCPALS(tensor: Tensor, rank: Int, norm: String = NORM_L1, maxIterations: Int = 25, minFms: Double = 0.99, checkpoint: Boolean = false)
 						 (implicit spark: SparkSession): Kruskal = {
-		val tensorMatricized = tensor.matricization()
+		var tensorMatricized = tensor.matricization().map(m => m.cache())
 		if (checkpoint) {
-			tensorMatricized.foreach(m => {
-				val mc = m.cache()
-				mc.checkpoint()
-				mc
+			tensorMatricized = tensorMatricized.map(m => {
+				m.checkpoint()
+				m
 			})
 		}
-		val result = new Array[ExtendedBlockMatrix](tensor.order)
-		var lambda = new Array[Double](tensor.order)
+		val factorMatrices = new Array[ExtendedBlockMatrix](tensor.order)
+		var lambdas = new Array[Double](tensor.order)
+		var lastIterationFactorMatrices = new Array[ExtendedBlockMatrix](tensor.order)
+		var lastIterationLambdas = new Array[Double](tensor.order)
+		var fms = 0.0
+		
 		// Randomized initialization
 		for (i <- 1 until tensor.order) {
-			result(i) = ExtendedBlockMatrix.gaussian(tensor.dimensionsSize(i), rank)
+			factorMatrices(i) = ExtendedBlockMatrix.gaussian(tensor.dimensionsSize(i), rank)
 		}
 		// V is updated for each dimension rather than recalculated
-		var v = (for (k <- 1 until result.size) yield
-			result(k)).reduce((m1, m2) => (m1.transpose.multiply(m1)).hadamard(m2.transpose.multiply(m2)))
+		var v = (for (k <- 1 until factorMatrices.size) yield
+			factorMatrices(k)).reduce((m1, m2) => (m1.transpose.multiply(m1)).hadamard(m2.transpose.multiply(m2)))
 		var termination = false
-		var nbIterations = 0
+		var nbIterations = 1
 		while (!termination) {
+			val cpBegin = System.currentTimeMillis()
 			println("iteration " + nbIterations)
 			for (i <- 0 until tensor.order) {
 				// Remove current dimension from V
-				if (result(i) != null) {
-					v = v.hadamard(result(i).transpose.multiply(result(i)), (m1, m2) => m1 /:/ m2)
+				if (factorMatrices(i) != null) {
+					v = v.hadamard(factorMatrices(i).transpose.multiply(factorMatrices(i)), (m1, m2) => (m1 /:/ m2).toDenseMatrix.map(x => if (x.isNaN()) 0.0 else x))
 				}
 				// Compute MTTKRP
 				val mttkrp = ExtendedBlockMatrix.mttkrp(tensorMatricized(i),
-						(for (k <- 0 until result.size if i != k) yield result(k))/*.reverse*/.toArray,
-						(for (k <- 0 until tensor.dimensionsSize.size if i != k) yield tensor.dimensionsSize(k)).toArray,
-						tensor.dimensionsSize(i),
-						rank
-					)
-				result(i) = mttkrp.multiply(v.pinverse())
+					(for (k <- 0 until factorMatrices.size if i != k) yield factorMatrices(k)).toArray,
+					(for (k <- 0 until tensor.dimensionsSize.size if i != k) yield tensor.dimensionsSize(k)).toArray,
+					tensor.dimensionsSize(i),
+					rank
+				)
+				factorMatrices(i) = mttkrp.multiply(v.pinverse())
 				
 				// Compute lambda
-				lambda = result(i).norm()
-				result(i) = result(i).applyOperation(m => {
+				if (norm == NORM_L2) {
+					lambdas = factorMatrices(i).normL2()
+				} else {
+					lambdas = factorMatrices(i).normL1()
+				}
+				factorMatrices(i) = factorMatrices(i).applyOperation(m => {
 					for (k <- 0 until rank) {
-						m(::,k) := m(::,k) / lambda(k)
+						m(::,k) := m(::,k) *:* (1 / lambdas(k))
 					}
 					m
 				})
 				
 				// Update of V
-				v = v.hadamard(result(i).transpose.multiply(result(i)))
+				v = v.hadamard(factorMatrices(i).transpose.multiply(factorMatrices(i)))
 			}
 			
-			if (nbIterations >= maxIterations) {
+			// Compute the Factor Match Score to see if the decomposition converges
+			if (nbIterations > 1) {
+				val begin = System.currentTimeMillis()
+				fms = ExtendedBlockMatrix.factorMatchScore(factorMatrices, lambdas, lastIterationFactorMatrices, lastIterationLambdas)
+				println(s"FMS: $fms in ${(System.currentTimeMillis() - begin).toDouble / 1000.0}s")
+			}
+			
+			lastIterationFactorMatrices = for (m <- factorMatrices) yield m
+			lastIterationLambdas = for (l <- lambdas) yield l
+			
+			if (fms > minFms || nbIterations >= maxIterations) {
 				termination = true
 			} else {
 				nbIterations += 1
 			}
+			println(s"CP in ${(System.currentTimeMillis() - cpBegin).toDouble / 1000.0}s")
 		}
-		Kruskal(result, lambda)
+		
+		Kruskal(factorMatrices, lambdas)
 	}
 }

@@ -52,7 +52,7 @@ class ExtendedBlockMatrixTest extends FunSuite with SharedSparkContext {
 	
 	test("test norm of matrix") {
 		val m1 = toExtendedBlockMatrix(m1Data, 2, 2)
-		val result = m1.norm()
+		val result = m1.normL1()
 		
 		assert(result(0) == 4.0)
 		assert(result(1) == 10.0)
@@ -86,7 +86,7 @@ class ExtendedBlockMatrixTest extends FunSuite with SharedSparkContext {
 			MatrixEntry(0, 7, 9.0),
 			MatrixEntry(1, 7, 10.0)
 		)
-		val mt = toCoordinateMatrix(dataMT, 8, 2).entries.keyBy(entry => math.ceil(entry.i / 1024).toInt)
+		val mt = toCoordinateMatrix(dataMT,2, 8).entries.keyBy(entry => math.ceil(entry.i / 1024).toInt)
 		val m1 = toExtendedBlockMatrix(m1Data, 2, 2)
 		val m2 = toExtendedBlockMatrix(m2Data, 2, 2)
 		val m3 = toExtendedBlockMatrix(m3Data, 2, 2)

@@ -1,9 +1,11 @@
 package org.apache.spark.mllib.linalg.distributed
 
-import breeze.linalg.{CSCMatrix, pinv, DenseMatrix => BDM, Matrix => BM}
+import breeze.linalg.{*, CSCMatrix, pinv, DenseMatrix => BDM, DenseVector => BDV, Matrix => BM}
 import org.apache.spark.mllib.linalg._
 import org.apache.spark.rdd.{PairRDDFunctions, RDD}
 import org.apache.spark.sql.SparkSession
+
+import scala.collection.mutable.ArrayBuffer
 
 class ExtendedBlockMatrix(blocks: RDD[((Int, Int), Matrix)],
 						  rowsPerBlock: Int,
@@ -58,15 +60,26 @@ class ExtendedBlockMatrix(blocks: RDD[((Int, Int), Matrix)],
 	}
 	
 	/**
-	 * Computes the norm of each column of this [[ExtendedBlockMatrix]], by adding the absolute value of all the
-	 * values of the vector.
+	 * Computes the l1 norm of each column of this [[ExtendedBlockMatrix]].
 	 */
-	def norm(): Array[Double] = {
+	def normL1(): Array[Double] = {
 		this.blocks.aggregate((for (i <- 0L until nCols) yield 0.0).toArray)((norm, _m1) => {
 			val ((_, _), m1) = _m1
-			m1.foreachActive((i, j, v) => norm(j) += Math.abs(v))
+			m1.foreachActive((i, j, v) => norm(j) += math.abs(v))
 			norm
 		}, (u1, u2) => (for (i <- u1.indices) yield u1(i) + u2(i)).toArray)
+	}
+	
+	/**
+	 * Computes the l2 norm of each column of this [[ExtendedBlockMatrix]].
+	 */
+	def normL2(): Array[Double] = {
+		val norms = this.blocks.aggregate((for (i <- 0L until nCols) yield 0.0).toArray)((norm, _m1) => {
+			val ((_, _), m1) = _m1
+			m1.foreachActive((i, j, v) => norm(j) += v * v)
+			norm
+		}, (u1, u2) => (for (i <- u1.indices) yield u1(i) + u2(i)).toArray)
+		for (norm <- norms) yield math.sqrt(norm)
 	}
 	
 	/**
@@ -82,6 +95,23 @@ class ExtendedBlockMatrix(blocks: RDD[((Int, Int), Matrix)],
 	 */
 	def pinverse()(implicit spark: SparkSession): ExtendedBlockMatrix = {
 		ExtendedBlockMatrix.fromBreeze(pinv(this.toSparseBreeze()))
+	}
+	
+	/**
+	 * Converts to a [[CoordinateMatrix]] and keeps the 0 entries.
+	 *
+	 */
+	def toCoordinateMatrixWithZeros(): CoordinateMatrix = {
+		val entryRDD = blocks.flatMap { case ((blockRowIndex, blockColIndex), mat) =>
+			val rowStart = blockRowIndex.toLong * rowsPerBlock
+			val colStart = blockColIndex.toLong * colsPerBlock
+			val entryValues = new ArrayBuffer[MatrixEntry]()
+			mat.foreachActive { (i, j, v) =>
+				if (i < numRows() - rowStart) entryValues += new MatrixEntry(rowStart + i, colStart + j, v)
+			}
+			entryValues
+		}
+		new CoordinateMatrix(entryRDD, numRows(), numCols())
 	}
 }
 
@@ -146,39 +176,63 @@ object ExtendedBlockMatrix {
 		require(colsPerBlock > 0,
 			s"colsPerBlock needs to be greater than 0. colsPerBlock: $colsPerBlock")
 		
-		val othersBlocks = (for (matrix <- dimensions) yield matrix.blocks.collect())
+		val othersBlocks = for (matrix <- dimensions) yield matrix.blocks.map {case ((blockRowIndex, blockColIndex), block) => blockRowIndex -> block.asBreeze}.collectAsMap()
 		
-		val blocks: RDD[((Int, Int), Matrix)] = tensor.aggregateByKey(CSCMatrix.zeros[Double](math.min(rowsPerBlock, currentDimensionSize.toInt), rank))((m, entry) => {
-				// Row id in the resulting block
-				val rowId = entry.i % rowsPerBlock
-				
-				// Find the corresponding index in each matrices of the khatri rao product
-				var currentJ = entry.j
-				val dimensionsIndex = for (i <- dimensionsSize.indices) yield {
-					val dimensionJ = (currentJ % dimensionsSize(i)).toInt
-					currentJ -= dimensionJ
-					currentJ /= dimensionsSize(i)
-					dimensionJ
+		val blocks: RDD[((Int, Int), Matrix)] = tensor.aggregateByKey(BDM.zeros[Double](math.min(rowsPerBlock, currentDimensionSize.toInt), rank))((m, entry) => {
+			// Row id in the resulting block
+			val rowId = entry.i % rowsPerBlock
+			
+			// Find the corresponding index in each matrices of the khatri rao product
+			var currentJ = entry.j
+			val dimensionsIndex = for (i <- dimensionsSize.indices) yield {
+				val dimensionJ = (currentJ % dimensionsSize(i)).toInt
+				currentJ -= dimensionJ
+				currentJ /= dimensionsSize(i)
+				dimensionJ
+			}
+			
+			// Find the corresponding value in the corresponding block of the matrices of the khatri rao product
+			for (r <- 0 until rank) {
+				var value = entry.value
+				for (i <- dimensionsIndex.indices) {
+					val currentIndex = dimensionsIndex(i)
+					val currentMatrix = othersBlocks(i)(if (currentIndex == 0) 0 else math.ceil(currentIndex / rowsPerBlock).toInt)
+					value *= currentMatrix(currentIndex % rowsPerBlock, r)
 				}
 				
-				// Find the corresponding value in the corresponding block of the matrices of the khatri rao product
-				for (r <- 0 until rank) yield {
-					var value = entry.value
-					for (i <- dimensionsIndex.indices) {
-						val currentIndex = dimensionsIndex(i)
-						val currentMatrix = othersBlocks(i).filter { case ((blockRowIndex, blockColIndex), block) => {
-							val newIndex = if (currentIndex == 0) 0 else math.ceil(currentIndex / rowsPerBlock).toInt
-							newIndex == blockRowIndex
-						}}.take(1).head
-						value *= currentMatrix._2(currentIndex % rowsPerBlock, r)
-					}
-					
-					m(rowId.toInt, r) += value
-				}
-				m
-			}, _ +:+ _)
+				m(rowId.toInt, r) += value
+			}
+			m
+		}, _ +:+ _)
 			.map { case (blockRowIndex, matrix) => ((blockRowIndex, 0), Matrices.fromBreeze(matrix)) }
-		
 		new BlockMatrix(blocks, rowsPerBlock, colsPerBlock, currentDimensionSize, rank)
+	}
+	
+	/**
+	 * Compute the Factor Match Score for 2 sets of matrices.
+	 *
+	 * @param currentMatrices
+	 * @param currentLambdas
+	 * @param lastIterationMatrices
+	 * @param lastIterationLambdas
+	 * @return
+	 */
+	def factorMatchScore(currentMatrices: Array[ExtendedBlockMatrix], currentLambdas: Array[Double],
+						 lastIterationMatrices: Array[ExtendedBlockMatrix], lastIterationLambdas: Array[Double]): Double = {
+		val matricesMultiplied = for (i <- 0 until currentMatrices.length) yield currentMatrices(i).transpose.multiply(lastIterationMatrices(i)).toSparseBreeze()
+		val currentMatricesNorms = for (i <- 0 until currentMatrices.length) yield currentMatrices(i).normL2()
+		val lastIterationMatricesNorms = for (i <- 0 until currentMatrices.length) yield lastIterationMatrices(i).normL2()
+		var score = 0.0
+		for (rank <- 0 until currentLambdas.length) {
+			val e1 = currentLambdas(rank) * currentMatricesNorms.aggregate(1.0)((v, l) => v * l(rank), (v1, v2) => v1 * v2)
+			val e2 = lastIterationLambdas(rank) * lastIterationMatricesNorms.aggregate(1.0)((v, l) => v * l(rank), (v1, v2) => v1 * v2)
+			val penalty = 1 - (math.abs(e1 - e2) / math.max(e1, e2))
+			var tmpScore = 1.0
+			for (i <- 0 until currentMatrices.length) {
+				tmpScore *= math.abs(matricesMultiplied(i)(rank, rank)) / (currentMatricesNorms(i)(rank) * lastIterationMatricesNorms(i)(rank))
+			}
+			score += penalty * tmpScore
+		}
+		score / currentLambdas.length
 	}
 }
