@@ -10,14 +10,15 @@ class Tensor(val data: DataFrame,
 			 val order: Int,
 			 val dimensionsSize: List[Long],
 			 val dimensionsName: List[String],
-			 val dimensionsIndex: Option[List[DataFrame]])(implicit spark: SparkSession) {
+			 val dimensionsIndex: Option[List[DataFrame]],
+			 val valueColumnName: String = "val")(implicit spark: SparkSession) {
 	/**
 	 * Computes the forbenius norm of this [[Tensor]], by adding the absolute value of all the
 	 * values of the tensor.
 	 */
 	def frobeniusNorm(): Double = {
 		math.sqrt(data.rdd.aggregate(0.0)((v, r) => {
-			val currentValue = r.getDouble(r.fieldIndex("val"))
+			val currentValue = r.getDouble(r.fieldIndex(valueColumnName))
 			v + (currentValue * currentValue)
 		}, _ + _))
 	}
@@ -52,15 +53,16 @@ class Tensor(val data: DataFrame,
 		}
 		
 		var matrices = List[RDD[(Int, MatrixEntry)]]()
+		val _valueColumnName = valueColumnName
 		for (i <- 0 until order) {
-			matrices :+= tensorData.select(s"row_$i", s"col_$i", "val")
+			matrices :+= tensorData.select(s"row_$i", s"col_$i", _valueColumnName)
 				.withColumnRenamed(s"col_$i", "col")
 				.withColumnRenamed(s"row_$i", "row")
 				.rdd.map(r => (math.ceil(r.get(r.fieldIndex("row")).toString.toLong / rowsPerBlock).toInt ->
 					MatrixEntry(
 						r.get(r.fieldIndex("row")).toString.toLong,
 						r.get(r.fieldIndex("col")).toString.toLong,
-						r.get(r.fieldIndex("val")).toString.toDouble))
+						r.get(r.fieldIndex(_valueColumnName)).toString.toDouble))
 				)
 		}
 		matrices
@@ -121,7 +123,8 @@ object Tensor {
 			data.columns.size - 1,
 			dimensionsSize,
 			dimensionsName,
-			Some(dimensionsIndex))
+			Some(dimensionsIndex),
+			valueColumnName)
 	}
 	
 	/**
@@ -152,7 +155,8 @@ object Tensor {
 			data.columns.size - 1,
 			dimensionsSize,
 			dimensionsName,
-			None)
+			None,
+			valueColumnName)
 	}
 	
 	private def createIndex(df: DataFrame)(implicit spark: SparkSession): DataFrame = {
