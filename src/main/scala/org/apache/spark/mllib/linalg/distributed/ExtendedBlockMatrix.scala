@@ -46,6 +46,29 @@ class ExtendedBlockMatrix(blocks: RDD[((Int, Int), Matrix)],
 	}
 	
 	/**
+	 * Multiplies this [[ExtendedBlockMatrix]] by an Array.
+	 */
+	def multiplyByArray(array: Array[Double])(implicit spark: SparkSession): ExtendedBlockMatrix = {
+		val nbColBlocks = (array.length.toDouble / colsPerBlock.toDouble).ceil.toInt
+		val vectorMap = (for (i <- 0 until nbColBlocks) yield i -> new BDV[Double](array.slice(i * colsPerBlock, (i + 1) * colsPerBlock)).t).toMap
+		spark.sparkContext.broadcast(vectorMap)
+		new ExtendedBlockMatrix(
+			blocks.map{ case ((i, j), matrix) => {
+				val bMatrix = matrix.asBreeze.toDenseMatrix
+				for (r <- 0 until bMatrix.rows) {
+					bMatrix(r, ::) := bMatrix(r, ::) *:* vectorMap(j)
+				}
+				((i, j), Matrices.fromBreeze(bMatrix))
+			}
+			}.reduceByKey(createPartitioner(), (a, b) => Matrices.fromBreeze(a.asBreeze + b.asBreeze)),
+			rowsPerBlock,
+			colsPerBlock,
+			nRows,
+			nCols
+		)
+	}
+	
+	/**
 	 * Converts this [[ExtendedBlockMatrix]] to a sparse Breeze matrix.
 	 */
 	def toSparseBreeze(): CSCMatrix[Double] = {
@@ -95,6 +118,32 @@ class ExtendedBlockMatrix(blocks: RDD[((Int, Int), Matrix)],
 	 */
 	def pinverse()(implicit spark: SparkSession): ExtendedBlockMatrix = {
 		ExtendedBlockMatrix.fromBreeze(pinv(this.toSparseBreeze()))
+	}
+	
+	/**
+	 * Computes the inverse of the matrix with the SVD of Spark.
+	 * From https://stackoverflow.com/questions/29869567/spark-distributed-matrix-multiply-and-pseudo-inverse-calculating
+	 *
+	 * @return
+	 */
+	def sparkPinverse()(implicit spark: SparkSession): ExtendedBlockMatrix = {
+		val X = this.toIndexedRowMatrix().toRowMatrix()
+		val nCoef = X.numCols.toInt
+		val svd = X.computeSVD(nCoef, computeU = true)
+		if (svd.s.size < nCoef) {
+			sys.error(s"RowMatrix.computeInverse called on singular matrix.")
+		}
+		
+		// Create the inv diagonal matrix from S
+		val invS = DenseMatrix.diag(new DenseVector(svd.s.toArray.map(x => math.pow(x,-1))))
+		
+		// U cannot be a RowMatrix
+		val U = new DenseMatrix(svd.U.numRows().toInt,svd.U.numCols().toInt,svd.U.rows.collect.flatMap(x => x.toArray))
+		
+		// If you could make V distributed, then this may be better. However its alreadly local...so maybe this is fine.
+		val V = svd.V
+		// inv(X) = V*inv(S)*transpose(U)  --- the U is already transposed.
+		ExtendedBlockMatrix.fromBreeze(((V.multiply(invS)).multiply(U)).asBreeze)
 	}
 	
 	/**
@@ -205,6 +254,58 @@ object ExtendedBlockMatrix {
 			m
 		}, _ +:+ _)
 			.map { case (blockRowIndex, matrix) => ((blockRowIndex, 0), Matrices.fromBreeze(matrix)) }
+		new BlockMatrix(blocks, rowsPerBlock, colsPerBlock, currentDimensionSize, rank)
+	}
+	
+	/**
+	 * Performs the "MTTKRP" (Matricized Tensor Times Khatri Rao Product) between the tensor as
+	 * a [[CoordinateMatrix]], and a list of [[BlockMatrix]]. To use when the rank > colsPerBlock
+	 *
+	 */
+	def mttkrpHighRank(tensor: PairRDDFunctions[Int, MatrixEntry], dimensions: Array[BlockMatrix], dimensionsSize: Array[Long],
+					   currentDimensionSize: Long, rank: Int,
+					   rowsPerBlock: Int = 1024, colsPerBlock: Int = 1024)(implicit spark: SparkSession): BlockMatrix = {
+		require(rowsPerBlock > 0,
+			s"rowsPerBlock needs to be greater than 0. rowsPerBlock: $rowsPerBlock")
+		require(colsPerBlock > 0,
+			s"colsPerBlock needs to be greater than 0. colsPerBlock: $colsPerBlock")
+		
+		val nbColBlocks = (rank.toDouble / colsPerBlock.toDouble).ceil.toInt
+		
+		val othersBlocks = for (matrix <- dimensions) yield matrix.blocks.map {case ((blockRowIndex, blockColIndex), block) => (blockRowIndex, blockColIndex) -> block.asBreeze.toDenseMatrix}.collectAsMap()
+		spark.sparkContext.broadcast(othersBlocks)
+		val blocks: RDD[((Int, Int), Matrix)] = tensor.aggregateByKey({
+			(for (_ <- 0 until nbColBlocks - 1) yield
+				BDM.zeros[Double](math.min(rowsPerBlock, currentDimensionSize.toInt), colsPerBlock)
+				) :+ BDM.zeros[Double](math.min(rowsPerBlock, currentDimensionSize.toInt), rank % colsPerBlock)
+		}
+		)((m, entry) => {
+			// Row id in the resulting block
+			val rowId = entry.i % rowsPerBlock
+			
+			// Find the corresponding index in each matrices of the khatri rao product
+			var currentJ = entry.j
+			val dimensionsIndex = for (i <- dimensionsSize.indices) yield {
+				val dimensionJ = (currentJ % dimensionsSize(i)).toInt
+				currentJ -= dimensionJ
+				currentJ /= dimensionsSize(i)
+				dimensionJ
+			}
+			
+			// Find the corresponding value in the corresponding block of the matrices of the khatri rao product
+			for (c <- 0 until nbColBlocks) {
+				var value = BDV.fill[Double](if (c < nbColBlocks - 1) colsPerBlock else rank % colsPerBlock, entry.value).t
+				for (i <- dimensionsIndex.indices) {
+					val currentIndex = dimensionsIndex(i)
+					val currentMatrix = othersBlocks(i)(if (currentIndex == 0) (0, c) else (math.ceil(currentIndex / rowsPerBlock).toInt, c))
+					value := value *:* currentMatrix(currentIndex % rowsPerBlock, ::)
+				}
+				m(c)(rowId.toInt, ::) := m(c)(rowId.toInt, ::) +:+ value
+			}
+			m
+		}, (m1, m2) => for (c <- 0 until nbColBlocks) yield m1(c) +:+ m2(c))
+			.flatMap { case (blockRowIndex, matrices) => for (c <- 0 until nbColBlocks) yield ((blockRowIndex, c), Matrices.fromBreeze(matrices(c))) }
+		
 		new BlockMatrix(blocks, rowsPerBlock, colsPerBlock, currentDimensionSize, rank)
 	}
 	

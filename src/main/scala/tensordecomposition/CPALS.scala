@@ -12,8 +12,11 @@ object CPALS {
 	/**
 	 * Computes the CAMDECOMP PARAFAC decomposition on the tensor.
 	 */
-	def computeSparkCPALS(tensor: Tensor, rank: Int, norm: String = NORM_L1, maxIterations: Int = 25, minFms: Double = 0.99, checkpoint: Boolean = false)
+	def computeSparkCPALS(tensor: Tensor, rank: Int, norm: String = NORM_L1, maxIterations: Int = 25,
+						  minFms: Double = 0.99, checkpoint: Boolean = false, highRank: Option[Boolean] = None)
 						 (implicit spark: SparkSession): Kruskal = {
+		val nbColsPerBlock = 1024
+		val useSparkPinv = if (highRank.isDefined) highRank.get else rank >= 100
 		var tensorMatricized = tensor.matricization().map(m => m.cache())
 		if (checkpoint) {
 			tensorMatricized = tensorMatricized.map(m => {
@@ -45,13 +48,23 @@ object CPALS {
 					v = v.hadamard(factorMatrices(i).transpose.multiply(factorMatrices(i)), (m1, m2) => (m1 /:/ m2).toDenseMatrix.map(x => if (x.isNaN()) 0.0 else x))
 				}
 				// Compute MTTKRP
-				val mttkrp = ExtendedBlockMatrix.mttkrp(tensorMatricized(i),
-					(for (k <- 0 until factorMatrices.size if i != k) yield factorMatrices(k)).toArray,
-					(for (k <- 0 until tensor.dimensionsSize.size if i != k) yield tensor.dimensionsSize(k)).toArray,
-					tensor.dimensionsSize(i),
-					rank
-				)
-				factorMatrices(i) = mttkrp.multiply(v.pinverse())
+				val mttkrp = if (rank > nbColsPerBlock) {
+					ExtendedBlockMatrix.mttkrpHighRank(tensorMatricized(i),
+						(for (k <- 0 until factorMatrices.size if i != k) yield factorMatrices(k)).toArray,
+						(for (k <- 0 until tensor.dimensionsSize.size if i != k) yield tensor.dimensionsSize(k)).toArray,
+						tensor.dimensionsSize(i),
+						rank
+					)
+				} else {
+					ExtendedBlockMatrix.mttkrp(tensorMatricized(i),
+						(for (k <- 0 until factorMatrices.size if i != k) yield factorMatrices(k)).toArray,
+						(for (k <- 0 until tensor.dimensionsSize.size if i != k) yield tensor.dimensionsSize(k)).toArray,
+						tensor.dimensionsSize(i),
+						rank
+					)
+				}
+				val pinv = if (useSparkPinv) v.sparkPinverse() else v.pinverse()
+				factorMatrices(i) = mttkrp.multiply(pinv)
 				
 				// Compute lambda
 				if (norm == NORM_L2) {
@@ -59,12 +72,16 @@ object CPALS {
 				} else {
 					lambdas = factorMatrices(i).normL1()
 				}
-				factorMatrices(i) = factorMatrices(i).applyOperation(m => {
-					for (k <- 0 until rank) {
-						m(::,k) := m(::,k) *:* (1 / lambdas(k))
+				factorMatrices(i) = if (rank > nbColsPerBlock)
+						factorMatrices(i).multiplyByArray(lambdas.map(l => 1 / l))
+					else {
+						factorMatrices(i).applyOperation(m => {
+							for (k <- 0 until rank) {
+								m(::, k) := m(::, k) *:* (1 / lambdas(k))
+							}
+							m
+						})
 					}
-					m
-				})
 				
 				// Update of V
 				v = v.hadamard(factorMatrices(i).transpose.multiply(factorMatrices(i)))
