@@ -20,7 +20,8 @@ Some optional parameters are available:
 - nbIterations (default 25): the maximum number of iterations ; 
 - norm (default CPALS.NORM_L1): the norm to use to normalize the factor matrices (NORM_L1 and NORM_L2 are available), 
 - minFms (default 0.99): the convergence limit to stop the iterations (the Factor Match Score is used to determine convergence), 
-- checkpoint (default false): set to true to use Spark checkpoints. It can improve performances.
+- checkpoint (default false): set to true to use Spark checkpoints. It can improve performances,
+- highRank (default None): set to Some[true] to compute the pinverse in the CP decomposition with Spark rather than with Breeze. By default, the Spark one is used when the rank is higher or equal than 100. Breeze is more efficient for low ranks.
 
 The result of the decomposition is a Map[String, DataFrame], with keys being the original name of each dimension, associated with a DataFrame of 3 columns: the value of the dimension, the rank, and the value found with the CP decomposition.
 
