@@ -1,29 +1,24 @@
-package tensordecomposition
+package mulot.tensordecomposition
 
-import org.apache.spark.mllib.linalg.distributed.{ExtendedBlockMatrix}
+import mulot.Tensor
+import org.apache.spark.mllib.linalg.distributed.ExtendedBlockMatrix
 import org.apache.spark.mllib.linalg.distributed.ExtendedBlockMatrix._
 import org.apache.spark.sql.SparkSession
 
 object CPALS {
 	val NORM_L1 = "l1"
 	val NORM_L2 = "l2"
-	case class Kruskal(A: Array[ExtendedBlockMatrix], lambdas: Array[Double])
+	case class Kruskal(A: Array[ExtendedBlockMatrix], lambdas: Array[Double], corcondia: Option[Double])
 	
 	/**
 	 * Computes the CAMDECOMP PARAFAC decomposition on the tensor.
 	 */
-	def computeSparkCPALS(tensor: Tensor, rank: Int, norm: String = NORM_L1, maxIterations: Int = 25,
-						  minFms: Double = 0.99, checkpoint: Boolean = false, highRank: Option[Boolean] = None)
-						 (implicit spark: SparkSession): Kruskal = {
+	def compute(tensor: Tensor, rank: Int, norm: String = NORM_L1, maxIterations: Int = 25,
+				minFms: Double = 0.99, highRank: Option[Boolean] = None, computeCorcondia: Boolean = false)
+			   (implicit spark: SparkSession): Kruskal = {
 		val nbColsPerBlock = 1024
 		val useSparkPinv = if (highRank.isDefined) highRank.get else rank >= 100
-		var tensorMatricized = tensor.matricization().map(m => m.cache())
-		if (checkpoint) {
-			tensorMatricized = tensorMatricized.map(m => {
-				m.checkpoint()
-				m
-			})
-		}
+		val tensorData = tensor.data.cache
 		val factorMatrices = new Array[ExtendedBlockMatrix](tensor.order)
 		var lambdas = new Array[Double](tensor.order)
 		var lastIterationFactorMatrices = new Array[ExtendedBlockMatrix](tensor.order)
@@ -49,18 +44,22 @@ object CPALS {
 				}
 				// Compute MTTKRP
 				val mttkrp = if (rank > nbColsPerBlock) {
-					ExtendedBlockMatrix.mttkrpHighRank(tensorMatricized(i),
-						(for (k <- 0 until factorMatrices.size if i != k) yield factorMatrices(k)).toArray,
-						(for (k <- 0 until tensor.dimensionsSize.size if i != k) yield tensor.dimensionsSize(k)).toArray,
+					ExtendedBlockMatrix.mttkrpHighRankDataFrame(tensorData,
+						(for (k <- factorMatrices.indices if i != k) yield factorMatrices(k)).toArray,
+						(for (k <- tensor.dimensionsSize.indices if i != k) yield tensor.dimensionsSize(k)).toArray,
+						i,
 						tensor.dimensionsSize(i),
-						rank
+						rank,
+						tensor.valueColumnName
 					)
 				} else {
-					ExtendedBlockMatrix.mttkrp(tensorMatricized(i),
-						(for (k <- 0 until factorMatrices.size if i != k) yield factorMatrices(k)).toArray,
-						(for (k <- 0 until tensor.dimensionsSize.size if i != k) yield tensor.dimensionsSize(k)).toArray,
+					ExtendedBlockMatrix.mttkrpDataFrame(tensorData,
+						(for (k <- factorMatrices.indices if i != k) yield factorMatrices(k)).toArray,
+						(for (k <- tensor.dimensionsSize.indices if i != k) yield tensor.dimensionsSize(k)).toArray,
+						i,
 						tensor.dimensionsSize(i),
-						rank
+						rank,
+						tensor.valueColumnName
 					)
 				}
 				val pinv = if (useSparkPinv) v.sparkPinverse() else v.pinverse()
@@ -73,15 +72,15 @@ object CPALS {
 					lambdas = factorMatrices(i).normL1()
 				}
 				factorMatrices(i) = if (rank > nbColsPerBlock)
-						factorMatrices(i).multiplyByArray(lambdas.map(l => 1 / l))
-					else {
-						factorMatrices(i).applyOperation(m => {
-							for (k <- 0 until rank) {
-								m(::, k) := m(::, k) *:* (1 / lambdas(k))
-							}
-							m
-						})
-					}
+					factorMatrices(i).multiplyByArray(lambdas.map(l => 1 / l))
+				else {
+					factorMatrices(i).applyOperation(m => {
+						for (k <- 0 until rank) {
+							m(::, k) := m(::, k) *:* (1 / lambdas(k))
+						}
+						m
+					})
+				}
 				
 				// Update of V
 				v = v.hadamard(factorMatrices(i).transpose.multiply(factorMatrices(i)))
@@ -105,6 +104,18 @@ object CPALS {
 			println(s"CP in ${(System.currentTimeMillis() - cpBegin).toDouble / 1000.0}s")
 		}
 		
-		Kruskal(factorMatrices, lambdas)
+		val corcondia = if (computeCorcondia)
+			None
+		else {
+			Some(ExtendedBlockMatrix.corcondia(tensorData, tensor.dimensionsSize.toArray,
+				factorMatrices(0).applyOperation(m => {
+					for (k <- 0 until rank) {
+						m(::, k) := m(::, k) *:* lambdas(k)
+					}
+					m
+				}) +: factorMatrices.tail, rank, tensor.valueColumnName))
+		}
+		
+		Kruskal(factorMatrices, lambdas, corcondia)
 	}
 }

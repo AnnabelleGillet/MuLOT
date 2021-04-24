@@ -1,11 +1,13 @@
-package tensordecomposition
+package mulot.tensordecomposition
 
+import mulot.Tensor
 import org.apache.spark.sql.SparkSession
 import org.scalatest.FunSuite
 
 class CPALSTest extends FunSuite {
 	test("test CP ALS") {
 		implicit val spark = SparkSession.builder().master("local[*]").getOrCreate()
+		spark.sparkContext.setLogLevel("WARN")
 		val size = 100L
 		val file = getClass.getResource("/tensor_3_100_0.1.csv").getPath
 		val tensor = Tensor.fromIndexedDataFrame(
