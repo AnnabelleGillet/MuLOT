@@ -18,8 +18,9 @@ class Tensor(val data: DataFrame,
 	 * values of the tensor.
 	 */
 	def frobeniusNorm(): Double = {
+        val _valueColumnName = valueColumnName
 		math.sqrt(data.rdd.aggregate(0.0)((v, r) => {
-			val currentValue = r.getDouble(r.fieldIndex(valueColumnName))
+			val currentValue = r.getDouble(r.fieldIndex(_valueColumnName))
 			v + (currentValue * currentValue)
 		}, _ + _))
 	}
