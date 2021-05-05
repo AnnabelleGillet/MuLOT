@@ -15,7 +15,7 @@ class CPALSTest extends FunSuite {
 			List(size, size, size))
 		val rank = 3
 		val begin = System.currentTimeMillis()
-		val result = tensor.runCPALS(rank, 10)
+		val result = tensor.runCPALS(rank, 10, computeCorcondia =  true)
 		println(s"Computed in ${(System.currentTimeMillis() - begin).toDouble / 1000.0}s")
 		for ((k, v) <- result) {
 			assert(v.select("rank").distinct.count() == rank)

@@ -104,17 +104,17 @@ object CPALS {
 			println(s"CP in ${(System.currentTimeMillis() - cpBegin).toDouble / 1000.0}s")
 		}
 		
-		val corcondia = if (!computeCorcondia) {
-				None
-			} else {
-				Some(ExtendedBlockMatrix.corcondia(tensorData, tensor.dimensionsSize.toArray,
+		var corcondia: Option[Double] = None
+		if (computeCorcondia) {
+			corcondia = Some(ExtendedBlockMatrix.corcondia(tensorData, tensor.dimensionsSize.toArray,
 					factorMatrices(0).applyOperation(m => {
 						for (k <- 0 until rank) {
 							m(::, k) := m(::, k) *:* lambdas(k)
 						}
 						m
 					}) +: factorMatrices.tail, rank, tensor.valueColumnName))
-			}
+			println(s"CORCONDIA: $corcondia")
+		}
 		
 		Kruskal(factorMatrices, lambdas, corcondia)
 	}
