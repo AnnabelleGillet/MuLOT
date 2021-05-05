@@ -1,5 +1,5 @@
 # MuLOT: the Spark tensor CANDECOMP/PARAFAC decomposition
-This implementation of the tensor CP decomposition in Spark can run on large scale tensors, containing billions of non-zero elements. Based on CoordinateMatrix and BlockMatrix, it benefits from distributed computing capabilities of Spark, thus allowing efficient processing. It is the ideal tool to perform CP decomposition directly on data, without having to create an intermediate structure used to map a value to its index in the tensor, as it works directly with DataFrame, with values of dimensions of any type. Performance of MuLOT makes it capable to analyze data ranging from small to large-scale.
+This implementation of the tensor CP decomposition in Spark can run on large scale tensors, containing billions of non-zero elements. Based on DataFrame and BlockMatrix, it benefits from distributed computing capabilities of Spark, thus allowing efficient processing. It is the ideal tool to perform CP decomposition directly on data, without having to create an intermediate structure used to map a value to its index in the tensor, as it works directly with DataFrame, with values of dimensions of any type. Performance of MuLOT makes it capable to analyze data ranging from small to large-scale.
 
 ## Using the Spark decomposition
 To use the decomposition, the first step is to create a DataFrame containing a column by dimension, and one more for storing the values of the tensor. Then, the tensor can be created from the DataFrame:
@@ -20,8 +20,8 @@ Some optional parameters are available:
 - nbIterations (default 25): the maximum number of iterations ; 
 - norm (default CPALS.NORM_L1): the norm to use to normalize the factor matrices (NORM_L1 and NORM_L2 are available), 
 - minFms (default 0.99): the convergence limit to stop the iterations (the Factor Match Score is used to determine convergence), 
-- checkpoint (default false): set to true to use Spark checkpoints. It can improve performances,
-- highRank (default None): set to Some[true] to compute the pinverse in the CP decomposition with Spark rather than with Breeze. By default, the Spark one is used when the rank is higher or equal than 100. Breeze is more efficient for low ranks.
+- highRank (default None): set to Some[true] to compute the pinverse in the CP decomposition with Spark rather than with Breeze. By default, the Spark one is used when the rank is higher or equal than 100. Breeze is more efficient for low ranks,
+- computeCorcondia (default false): set to true to compute the [core consistency diagnostic](https://analyticalsciencejournals.onlinelibrary.wiley.com/doi/pdf/10.1002/cem.801) of the decomposition.
 
 The result of the decomposition is a Map[String, DataFrame], with keys being the original name of each dimension, associated with a DataFrame of 3 columns: the value of the dimension, the rank, and the value found with the CP decomposition.
 
