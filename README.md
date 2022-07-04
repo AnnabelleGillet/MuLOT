@@ -26,6 +26,9 @@ Some optional parameters are available:
 The result of the decomposition is a Map[String, DataFrame], with keys being the original name of each dimension, associated with a DataFrame of 3 columns: the value of the dimension, the rank, and the value found with the CP decomposition.
 
 ## Experiments
-Our implementation have been tested to compare its execution time with other CP decomposition libraries made for large-scale tensors. The notebooks can be found in the experiments folder. MuLOT outperforms these libraries at large-scale, while being suitable for small and medium tensors analysis.
+Our implementation have been tested to compare its execution time with other CP decomposition libraries made for large-scale tensors. The notebooks can be found in the experiments folder. MuLOT outperforms these libraries at large-scale, while being suitable for small and medium tensors analysis. TensorLy is used as a reference of non-distributed library. 
 
 ![Benchmark results](experiments/CPALS_benchmark_dim3.png?raw=true "Benchmark results")
+
+## To cite the work
+GILLET, Annabelle, LECLERCQ, Éric, et CULLOT, Nadine. MuLOT: Multi-level Optimization of the Canonical Polyadic Tensor Decomposition at Large-Scale. In : European Conference on Advances in Databases and Information Systems. Springer, Cham, 2021. p. 198-212.
