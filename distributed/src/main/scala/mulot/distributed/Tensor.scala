@@ -6,7 +6,7 @@ import org.apache.spark.sql.functions.{array, col, udf}
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
 import org.apache.spark.sql.{Column, DataFrame, Row, SparkSession}
 
-class Tensor private(val data: DataFrame,
+class Tensor (val data: DataFrame,
 			 val order: Int,
 			 val dimensionsSize: Array[Long],
 			 val dimensionsName: Array[String],

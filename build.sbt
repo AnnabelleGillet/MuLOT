@@ -1,6 +1,6 @@
 name := "MuLOT"
 ThisBuild / organization := "io.github.annabellegillet"
-ThisBuild / version      := "0.4"
+ThisBuild / version      := "0.5"
 ThisBuild / scalaVersion := "2.12.16"
 
 // Breeze
