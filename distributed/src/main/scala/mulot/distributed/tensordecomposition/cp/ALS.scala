@@ -12,28 +12,28 @@ object ALS {
 	def apply(tensor: Tensor, rank: Int)(implicit spark: SparkSession): ALS =  {
 		new ALS(tensor, rank)(spark)
 	}
+	
+	object Initializers {
+		def gaussian(tensor: Tensor, rank: Int)(implicit spark: SparkSession): Array[ExtendedBlockMatrix] = {
+			(for (i <- 1 until tensor.order) yield {
+				ExtendedBlockMatrix.gaussian(tensor.dimensionsSize(i), rank)
+			}).toArray
+		}
+		
+		def hosvd(tensor: Tensor, rank: Int)(implicit spark: SparkSession): Array[ExtendedBlockMatrix] = {
+			(for (i <- 1 until tensor.order) yield {
+				ExtendedBlockMatrix.hosvd(tensor, i, rank)
+			}).toArray
+		}
+	}
 }
 
 class ALS private(val tensor: Tensor, val rank: Int)(implicit spark: SparkSession)
 	extends cp.ALS[Tensor, ExtendedBlockMatrix, Map[String, DataFrame]]
 		with Logging {
 	
-	object Initializers {
-		def gaussian(tensor: Tensor, rank: Int): Array[ExtendedBlockMatrix] = {
-			(for (i <- 1 until tensor.order) yield {
-				ExtendedBlockMatrix.gaussian(tensor.dimensionsSize(i), rank)
-			}).toArray
-		}
-		
-		def hosvd(tensor: Tensor, rank: Int): Array[ExtendedBlockMatrix] = {
-			(for (i <- 1 until tensor.order) yield {
-				ExtendedBlockMatrix.hosvd(tensor, i, rank)
-			}).toArray
-		}
-	}
-	
 	protected var highRank: Option[Boolean] = None
-	override var initializer: (Tensor, Int) => Array[ExtendedBlockMatrix] = Initializers.gaussian
+	override var initializer: (Tensor, Int) => Array[ExtendedBlockMatrix] = ALS.Initializers.gaussian
 	
 	override protected def copy(): ALS = {
 		val newObject = new ALS(tensor, rank)

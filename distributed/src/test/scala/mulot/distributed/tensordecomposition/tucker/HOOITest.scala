@@ -22,7 +22,7 @@ class HOOITest extends FunSuite {
 		val ranks = Array(3, 3, 3)
 		val valueColumnName = "val"
 		val tensor = Tensor.fromIndexedDataFrame(
-			data.toDF("d0", "d1", "d2", valueColumnName),
+			data.toDF("d0", "d1", "d2", valueColumnName).select(valueColumnName, "d0", "d1", "d2"),
 			sizes,
 			valueColumnName = valueColumnName)
 		println("Tensor created")

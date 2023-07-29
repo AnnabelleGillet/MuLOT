@@ -61,7 +61,7 @@ val cp = CP(tensor, rank)
     .withMaxIterations(50) // the maximum number of iterations (default 25)
     .withMinFms(0.95) // The Factor Match Score threshold used to stop the iterations (default 0.99)
     .withNorm(Norms.L1) // The norm to use on the factor matrices (default L2)
-    .withInitializer(Initializers.hosvd) // The method used to initialize the factor matrices (default gaussian)
+    .withInitializer(ALS.Initializers.hosvd) // The method used to initialize the factor matrices (default gaussian)
     .withComputeCorcondia(true) // To decide if CORCONDIA must be computed on the result (default false)
 ```
 CORCONDIA is the [core consistency diagnostic](https://analyticalsciencejournals.onlinelibrary.wiley.com/doi/pdf/10.1002/cem.801), and can be used to evaluate the quality of the decomposition.
@@ -93,7 +93,7 @@ Some optional parameters are available:
 val tucker = HOOI(tensor, ranks)
     .withMaxIterations(50) // the maximum number of iterations (default 25)
     .withMinFrobenius(10E-6) // The Frobenius threshold used to stop the iterations (default 10E-5)
-    .withInitializer(Initializers.hosvd) // The method used to initialize the factor matrices (default hosvd)
+    .withInitializer(HOOI.Initializers.hosvd) // The method used to initialize the factor matrices (default hosvd)
 ```
 
 Once the decomposition is set, it is run with:

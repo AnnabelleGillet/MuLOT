@@ -8,7 +8,30 @@ import scribe.Logging
 
 object HOOI {
 	def apply(tensor: Tensor, ranks: Array[Int])(implicit spark: SparkSession): HOOI = {
-		new HOOI(tensor, ranks)(spark)
+		var columnsName = (for (i <- 0 until tensor.order) yield s"row_$i") :+ tensor.valueColumnName
+		var newTensor = new Tensor(
+			tensor.data.select(columnsName(0), columnsName.tail: _*).cache(),
+			tensor.order,
+			tensor.dimensionsSize,
+			tensor.dimensionsName,
+			tensor.dimensionsIndex,
+			tensor.valueColumnName
+		)
+		new HOOI(newTensor, ranks)(spark)
+	}
+	
+	object Initializers {
+		def gaussian(tensor: Tensor, ranks: Array[Int])(implicit spark: SparkSession): Array[ExtendedIndexedRowMatrix] = {
+			(for (i <- 0 until tensor.order) yield {
+				ExtendedIndexedRowMatrix.gaussian(tensor.dimensionsSize(i), ranks(i))
+			}).toArray
+		}
+		
+		def hosvd(tensor: Tensor, ranks: Array[Int])(implicit spark: SparkSession): Array[ExtendedIndexedRowMatrix] = {
+			(for (i <- 0 until tensor.order) yield {
+				ExtendedIndexedRowMatrix.fromIndexedRowMatrix(tensor.matricization(i, true)).VofSVD(ranks(i))
+			}).toArray
+		}
 	}
 }
 
@@ -16,21 +39,7 @@ class HOOI private[tucker](val tensor: Tensor, val ranks: Array[Int])(implicit s
 	extends tucker.HOOI[Tensor, ExtendedIndexedRowMatrix, Map[String, DataFrame]]
 		with Logging {
 	
-	object Initializers {
-		def gaussian(tensor: Tensor, ranks: Array[Int]): Array[ExtendedIndexedRowMatrix] = {
-			(for (i <- 0 until tensor.order) yield {
-				ExtendedIndexedRowMatrix.gaussian(tensor.dimensionsSize(i), ranks(i))
-			}).toArray
-		}
-		
-		def hosvd(tensor: Tensor, ranks: Array[Int]): Array[ExtendedIndexedRowMatrix] = {
-			(for (i <- 0 until tensor.order) yield {
-				ExtendedIndexedRowMatrix.fromIndexedRowMatrix(tensor.matricization(i, true)).VofSVD(ranks(i))
-			}).toArray
-		}
-	}
-	
-	override var initializer: (Tensor, Array[Int]) => Array[ExtendedIndexedRowMatrix] = Initializers.hosvd
+	override var initializer: (Tensor, Array[Int]) => Array[ExtendedIndexedRowMatrix] = HOOI.Initializers.hosvd
 	
 	override protected def copy(): HOOI = {
 		val newObject = new HOOI(tensor, ranks)
@@ -80,6 +89,7 @@ class HOOI private[tucker](val tensor: Tensor, val ranks: Array[Int])(implicit s
 			// Compute the new factor matrices
 			for (dimensionIndice <- dimensionsOrder.indices) {
 				val dimension = dimensionsOrder(dimensionIndice)
+				
 				// Prepare the core tensor for the iteration
 				var coreTensor = new Tensor(
 					previousCoreTensor.data.cache(),
@@ -140,6 +150,19 @@ class HOOI private[tucker](val tensor: Tensor, val ranks: Array[Int])(implicit s
 				finalCoreTensor = factorMatrices(dimension).modeNProductWithTranspose(finalCoreTensor, dimension)
 			}
 		}
+		
+		var finalData = finalCoreTensor.data
+		for (dimension <- 0 until finalCoreTensor.order) {
+			finalData = finalData.withColumnRenamed(s"row_$dimension", finalCoreTensor.dimensionsName(dimension))
+		}
+		finalCoreTensor = new Tensor(
+			finalData,
+			tensor.order,
+			tensor.dimensionsSize,
+			tensor.dimensionsName,
+			tensor.dimensionsIndex,
+			tensor.valueColumnName
+		)
 		
 		HOOIResult(factorMatrices, finalCoreTensor)
 	}
