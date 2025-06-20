@@ -1,12 +1,12 @@
 package mulot.distributed.tensordecomposition.tucker
 
-import mulot.core.tensordecomposition.tucker
+import mulot.core.tensordecomposition.{AbstractHOOIResult, tucker}
 import mulot.distributed.Tensor
 import org.apache.spark.mllib.linalg.distributed.ExtendedIndexedRowMatrix
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import scribe.Logging
 
-object HOOI {
+object HOOI extends Logging {
 	def apply(tensor: Tensor, ranks: Array[Int])(implicit spark: SparkSession): HOOI = {
 		var columnsName = (for (i <- 0 until tensor.order) yield s"row_$i") :+ tensor.valueColumnName
 		var newTensor = new Tensor(
@@ -33,28 +33,63 @@ object HOOI {
 			}).toArray
 		}
 	}
+	
+	object ConvergenceMethods {
+		/**
+		 * The Frobenius norm is used as convergence criteria to determine when to stop the iteration.
+		 * It represents the similarity between the core tensors of two iterations, with a value between 0 and 1 (at 0
+		 * the core tensors are completely different, and they are the same at 1).
+		 */
+		def frobeniusNormOnCoreTensor(originalTensor: Tensor): (AbstractHOOIResult[ExtendedIndexedRowMatrix, Tensor], AbstractHOOIResult[ExtendedIndexedRowMatrix, Tensor]) => Double = {
+			val originalFrobenius = originalTensor.frobeniusNorm()
+			
+			def compute(currentResult: AbstractHOOIResult[ExtendedIndexedRowMatrix, Tensor], previousResult: AbstractHOOIResult[ExtendedIndexedRowMatrix, Tensor]): Double = {
+				val begin = System.currentTimeMillis()
+				val frobenius = currentResult.coreTensor.frobeniusNorm()
+				val residualNorm = math.sqrt(originalFrobenius * originalFrobenius - frobenius * frobenius)
+				val frobeniusDifference = 1 - ({
+					if (residualNorm.isNaN) 0.0 else residualNorm
+				} / originalFrobenius)
+				
+				val previousFrobenius = previousResult.coreTensor.frobeniusNorm()
+				val previousResidualNorm = math.sqrt(originalFrobenius * originalFrobenius - previousFrobenius * previousFrobenius)
+				val previousFrobeniusDifference = 1 - ({
+					if (previousResidualNorm.isNaN) 0.0 else previousResidualNorm
+				} / originalFrobenius)
+				
+				val score = math.abs(previousFrobeniusDifference - frobeniusDifference)
+				logger.info(s"Frobenius on core tensor = $score, computed in ${(System.currentTimeMillis() - begin).toDouble / 1000.0}s")
+				score
+			}
+			
+			compute
+		}
+	}
 }
 
-class HOOI private[tucker](val tensor: Tensor, val ranks: Array[Int])(implicit spark: SparkSession)
+class HOOI private[tucker](override var tensor: Tensor, val ranks: Array[Int])(implicit spark: SparkSession)
 	extends tucker.HOOI[Tensor, ExtendedIndexedRowMatrix, Map[String, DataFrame]]
 		with Logging {
 	
-	override var initializer: (Tensor, Array[Int]) => Array[ExtendedIndexedRowMatrix] = HOOI.Initializers.hosvd
+	type Return = HOOI
 	
-	override protected def copy(): HOOI = {
-		val newObject = new HOOI(tensor, ranks)
-		newObject
+	override private[mulot] var initializer: (Tensor, Array[Int]) => Array[ExtendedIndexedRowMatrix] = HOOI.Initializers.hosvd
+	override private[mulot] var convergenceMethod: (HOOIResult, HOOIResult) => Double = HOOI.ConvergenceMethods.frobeniusNormOnCoreTensor(tensor)
+	
+	override protected def internalCopy(): Return = {
+		val newDecomposition = new HOOI(tensor, ranks)
+		newDecomposition
+	}
+	override protected def copy(): Return = {
+		val newDecomposition = super.copy()
+		newDecomposition
 	}
 	
 	override protected def resultToExplicitValues(result: HOOIResult): Map[String, DataFrame] = {
 		(for (i <- tensor.dimensionsName.indices) yield {
 			var df = spark.createDataFrame(result.U(i).toCoordinateMatrix().entries).toDF("dimIndex", "rank", "val")
-			if (tensor.dimensionsIndex.isDefined) {
-				df = df.join(tensor.dimensionsIndex.get(i), "dimIndex").select("dimValue", "rank", "val")
-				df = df.withColumnRenamed("dimValue", tensor.dimensionsName(i))
-			} else {
-				df = df.withColumnRenamed("dimIndex", tensor.dimensionsName(i))
-			}
+			df = df.join(tensor.dimensionsIndex(i), "dimIndex").select("dimValue", "rank", "val")
+			df = df.withColumnRenamed("dimValue", tensor.dimensionsName(i))
 			tensor.dimensionsName(i) -> df
 		}).toMap
 	}
@@ -63,20 +98,18 @@ class HOOI private[tucker](val tensor: Tensor, val ranks: Array[Int])(implicit s
 		// Initialisation
 		val begin = System.currentTimeMillis()
 		val factorMatrices = initializer(tensor, ranks)
-		println(s"Initialisation in ${(System.currentTimeMillis() - begin).toDouble / 1000.0}s")
 		
 		// Order the dimensions of the tensor to start from the biggest one,
 		// so we can reduce quickly the total size of the tensor
 		val dimensionsOrder = tensor.dimensionsSize.zipWithIndex.sortWith((v1, v2) => v1._1 >= v2._1).map(v => v._2)
 		var convergence = false
 		var finalCoreTensor: Tensor = null
-		var lastIterationFrobeniusDifference = Double.MaxValue
-		val originalFrobenius = tensor.frobeniusNorm()
-		var iteration = 0
+		var lastIterationHOOIResult: HOOIResult = null
+		var iteration = 1
 		
 		// Iterate while the convergence criteria is not met
 		while (!convergence && iteration <= maxIterations) {
-			println(s"Iteration $iteration")
+			logger.info(s"Iteration $iteration")
 			val tuckerBegin = System.currentTimeMillis()
 			var previousCoreTensor = new Tensor(
 				tensor.data.cache(),
@@ -114,27 +147,23 @@ class HOOI private[tucker](val tensor: Tensor, val ranks: Array[Int])(implicit s
 			
 			// Compute the Frobenius norm of the difference of the current core tensor and of the core tensor
 			// of the previous iteration
-			val frobenius = previousCoreTensor.frobeniusNorm()
-			val residualNorm = math.sqrt(originalFrobenius * originalFrobenius - frobenius * frobenius)
-			val frobeniusDifference = 1 - ({
-				if (residualNorm.isNaN) 0.0 else residualNorm
-			} / originalFrobenius)
-			val tolerance = math.abs(lastIterationFrobeniusDifference - frobeniusDifference)
-			println(s"Convergence value of the iteration: $tolerance")
-			// Check if the difference between the two Frobenius norm is smaller
-			// than the convergence criteria
-			if (tolerance <= minFrobenius) {
-				convergence = true
+			if (computeConvergence && iteration > 1) {
+				val currentResult = HOOIResult(factorMatrices, previousCoreTensor)
+				val score = convergenceMethod(currentResult, lastIterationHOOIResult)
+				if (score <= convergenceThreshold) {
+					convergence = true
+				}
 			}
-			lastIterationFrobeniusDifference = frobeniusDifference
 			
-			// Keep the final core tensor il the convergence criteria is met
+			lastIterationHOOIResult = HOOIResult(factorMatrices, previousCoreTensor)
+			
+			// Keep the final core tensor if the convergence criteria is met
 			if (convergence || iteration >= maxIterations) {
 				finalCoreTensor = previousCoreTensor
 			}
 			
+			logger.info(s"Iteration $iteration computed in ${(System.currentTimeMillis() - tuckerBegin).toDouble / 1000.0}s")
 			iteration += 1
-			println(s"Tucker iteration in ${(System.currentTimeMillis() - tuckerBegin).toDouble / 1000.0}s")
 		}
 		if (finalCoreTensor == null) {
 			finalCoreTensor = new Tensor(

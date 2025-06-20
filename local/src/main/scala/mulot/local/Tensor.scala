@@ -16,7 +16,7 @@ class Tensor private(val data: Map[Array[_], Double],
 					 val dimensionsIndex: Array[Map[Any, Int]],
 					 val inverseDimensionsIndex: Array[Map[Int, Any]],
 					 val tensorIntegerData: Map[Array[Int], Double]
-			) extends mulot.core.Tensor[Map[Array[_], Double]] {
+			) extends mulot.core.Tensor {
 	/**
 	 * Matricize the tensor on the mode n.
 	 *
@@ -42,6 +42,25 @@ class Tensor private(val data: Map[Array[_], Double],
 			}
 		}
 		matrix
+	}
+	
+	private[mulot] def reindex(dimension: Int, newIndex: Map[Any, Int], newInverseIndex: Map[Int, Any]): Tensor = {
+		
+		val newTensorIntegerData = for ((keys, value) <- tensorIntegerData) yield {
+			val newKey = (for (i <- keys.indices) yield {
+				if (i == dimension) {
+					// Transform the key to the new index
+					newIndex(inverseDimensionsIndex(i)(keys(i)))
+				} else {
+					keys(i)
+				}
+			}).toArray
+			newKey -> value
+		}
+		val newIndexes = for (i <- dimensionsIndex.indices) yield {if (i == dimension) newIndex else dimensionsIndex(i)}
+		val newInverseIndexes = for (i <- inverseDimensionsIndex.indices) yield {if (i == dimension) newInverseIndex else inverseDimensionsIndex(i)}
+		val newDimensionsSize = for (i <- dimensionsSize.indices) yield {if (i == dimension) newIndex.size else dimensionsSize(i)}
+		new Tensor(data, order, newDimensionsSize.toArray, dimensionsName, newIndexes.toArray, newInverseIndexes.toArray, newTensorIntegerData)
 	}
 }
 
@@ -94,8 +113,8 @@ object Tensor {
 	 * @param dimensionsName the name of the dimensions, in the same order as given in the keys
 	 */
 	def fromIndexedMap(data: Map[Array[Int], Double], order: Int, dimensionsSize: Array[Int], dimensionsName: Array[String]): Tensor = {
-		val dimensionsIndex: Array[Map[Any, Int]] = (for (_ <- 0 until order) yield {Map[Any, Int]()}).toArray
-		val inverseDimensionsIndex: Array[Map[Int, Any]] = (for (_ <- 0 until order) yield {Map[Int, Any]()}).toArray
+		val dimensionsIndex: Array[Map[Any, Int]] = (for (_ <- 0 until order) yield Map.empty[Any, Int]).toArray
+		val inverseDimensionsIndex: Array[Map[Int, Any]] = (for (_ <- 0 until order) yield Map.empty[Int, Any]).toArray
 		for (i <- 0 until order) {
 			for (n <- 0 until dimensionsSize(i)) {
 				dimensionsIndex(i) += n -> n
@@ -103,5 +122,22 @@ object Tensor {
 			}
 		}
 		new Tensor(data.asInstanceOf[Map[Array[_], Double]], order, dimensionsSize, dimensionsName, dimensionsIndex, inverseDimensionsIndex, data)
+	}
+	
+	private[mulot] def reindexDimension(tensors: Array[(Tensor, Int)]): Map[Any, Int] = {
+		var newIndex = tensors.head._1.dimensionsIndex(tensors.head._2)
+		var currentSize = newIndex.size
+		for ((tensor, dimension) <- tensors.tail) {
+			val newElements = tensor.dimensionsIndex(dimension) -- newIndex.keySet
+			if (newElements.nonEmpty) { // Add the elements that are not already in index
+				var i = 0
+				for ((k, _) <- newElements) {
+					newIndex += (k -> (currentSize + i))
+					i += 1
+				}
+				currentSize += newElements.size
+			}
+		}
+		newIndex
 	}
 }

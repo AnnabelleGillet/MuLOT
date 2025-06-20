@@ -1,8 +1,7 @@
 package org.apache.spark.mllib.linalg.distributed
 
 import java.io.Serializable
-
-import breeze.linalg.{*, CSCMatrix, pinv, sum, DenseMatrix => BDM, DenseVector => BDV, Matrix => BM}
+import breeze.linalg.{*, CSCMatrix, NotConvergedException, inv, pinv, sum, DenseMatrix => BDM, DenseVector => BDV, Matrix => BM}
 import mulot.distributed.Tensor
 import org.apache.spark.mllib.linalg._
 import org.apache.spark.rdd.{PairRDDFunctions, RDD}
@@ -136,6 +135,13 @@ class ExtendedBlockMatrix(blocks: RDD[((Int, Int), Matrix)],
 	}
 	
 	/**
+	 * Applies the `inv` function from Breeze.
+	 */
+	def inverse()(implicit spark: SparkSession): ExtendedBlockMatrix = {
+		ExtendedBlockMatrix.fromBreeze(inv(this.toBreeze()))
+	}
+	
+	/**
 	 * Computes the inverse of the matrix with the SVD of Spark.
 	 * From https://stackoverflow.com/questions/29869567/spark-distributed-matrix-multiply-and-pseudo-inverse-calculating
 	 *
@@ -150,7 +156,7 @@ class ExtendedBlockMatrix(blocks: RDD[((Int, Int), Matrix)],
 		}
 		
 		// Create the inv diagonal matrix from S
-		val invS = DenseMatrix.diag(new DenseVector(svd.s.toArray.map(x => math.pow(x,-1))))
+		val invS = DenseMatrix.diag(new DenseVector(svd.s.toArray.map(x => math.pow(x, -1))))
 		
 		// U cannot be a RowMatrix
 		val U = Matrices.fromBreeze(svd.U.toBreeze()).transpose.asInstanceOf[DenseMatrix]
@@ -445,16 +451,16 @@ object ExtendedBlockMatrix {
 	 */
 	def factorMatchScore(currentMatrices: Array[ExtendedBlockMatrix], currentLambdas: Array[Double],
 						 lastIterationMatrices: Array[ExtendedBlockMatrix], lastIterationLambdas: Array[Double]): Double = {
-		val matricesMultiplied = for (i <- 0 until currentMatrices.length) yield currentMatrices(i).transpose.multiply(lastIterationMatrices(i)).toSparseBreeze()
-		val currentMatricesNorms = for (i <- 0 until currentMatrices.length) yield currentMatrices(i).normL2()
-		val lastIterationMatricesNorms = for (i <- 0 until currentMatrices.length) yield lastIterationMatrices(i).normL2()
+		val matricesMultiplied = for (i <- currentMatrices.indices) yield currentMatrices(i).transpose.multiply(lastIterationMatrices(i)).toSparseBreeze()
+		val currentMatricesNorms = for (i <- currentMatrices.indices) yield currentMatrices(i).normL2()
+		val lastIterationMatricesNorms = for (i <- currentMatrices.indices) yield lastIterationMatrices(i).normL2()
 		var score = 0.0
-		for (rank <- 0 until currentLambdas.length) {
+		for (rank <- currentLambdas.indices) {
 			val e1 = currentLambdas(rank) * currentMatricesNorms.aggregate(1.0)((v, l) => v * l(rank), (v1, v2) => v1 * v2)
 			val e2 = lastIterationLambdas(rank) * lastIterationMatricesNorms.aggregate(1.0)((v, l) => v * l(rank), (v1, v2) => v1 * v2)
 			val penalty = 1 - (math.abs(e1 - e2) / math.max(e1, e2))
 			var tmpScore = 1.0
-			for (i <- 0 until currentMatrices.length) {
+			for (i <- currentMatrices.indices) {
 				tmpScore *= math.abs(matricesMultiplied(i)(rank, rank)) / (currentMatricesNorms(i)(rank) * lastIterationMatricesNorms(i)(rank))
 			}
 			score += penalty * tmpScore
@@ -479,15 +485,25 @@ object ExtendedBlockMatrix {
 		case class SVD(u: BDM[Double], v: BDM[Double], s: BDV[Double])
 		
 		val svds = for (matrix <- matrices) yield {
-			val X = matrix.toIndexedRowMatrix()
-			val svd = X.computeSVD(rank, computeU = true)
-			if (svd.s.size < rank) {
-				return Double.NaN
+			try {
+				val X = matrix.toIndexedRowMatrix()
+				val svd = X.computeSVD(rank, computeU = true)
+				if (svd.s.size < rank) {
+					return Double.NaN
+				}
+				
+				val U = svd.U.toBreeze()
+				
+				SVD(U, svd.V.asBreeze.toDenseMatrix, svd.s.asBreeze.toDenseVector)
+			} catch {
+				case _: NotConvergedException => try {
+					val svdResult = breeze.linalg.svd(matrix.toBreeze())
+					if (svdResult.S.size < rank) {
+						return Double.NaN
+					}
+					SVD(svdResult.U(::, 0 until rank), svdResult.Vt(0 until rank, ::).t, svdResult.S(0 until rank))
+				} catch {case _: NotConvergedException => return Double.NaN}
 			}
-			
-			val U = svd.U.toBreeze()
-			
-			SVD(U, svd.V.asBreeze.toDenseMatrix, svd.s.asBreeze.toDenseVector)
 		}
 		val uut = utt(tensor, (for (i <- svds.indices) yield svds(i).u.t).toArray, dimensionsSize, rank, valueColunmName)
 		
@@ -563,7 +579,7 @@ object ExtendedBlockMatrix {
 		spark.sparkContext.broadcast(u)
 		val result: BDV[Double] = tensor.rdd.treeAggregate(BDV.zeros[Double](math.pow(rank, u.length).toInt))((v, entry) => {
 			// Find the corresponding index in each matrices of the khatri rao product
-			val dimensionsIndex = for (i <- 0 until dimensionsSize.length) yield {
+			val dimensionsIndex = for (i <- dimensionsSize.indices) yield {
 				entry.getLong(entry.fieldIndex(s"row_$i")).toInt
 			}
 			

@@ -2,9 +2,9 @@ package mulot.distributed.tensordecomposition.tucker
 
 import mulot.distributed.Tensor
 import org.apache.spark.sql.SparkSession
-import org.scalatest.FunSuite
-import org.scalatest.Matchers.{convertNumericToPlusOrMinusWrapper, convertToAnyShouldWrapper}
-class HOOITest extends FunSuite {
+import org.scalatest.funsuite.AnyFunSuite
+import org.scalatest.matchers.should.Matchers.{convertNumericToPlusOrMinusWrapper, convertToAnyShouldWrapper}
+class HOOITest extends AnyFunSuite {
 	implicit val spark: SparkSession = SparkSession.builder().master("local[*]").getOrCreate()
 	spark.sparkContext.setLogLevel("WARN")
 	

@@ -1,69 +1,43 @@
 package mulot.core.tensordecomposition.tucker
 
 import mulot.core.Tensor
+import mulot.core.tensordecomposition.{AbstractHOOIResult, Decomposition}
 
-trait HOOI[T1 <: Tensor[_], T2, T3] {
-	protected val tensor: T1
+trait HOOI[TensorType <: Tensor, FactorMatricesType, ExplicitValuesType] extends Decomposition[TensorType, FactorMatricesType, ExplicitValuesType] {
+	
+	type Return <: HOOI[TensorType, FactorMatricesType, ExplicitValuesType]
+	type DR = HOOIResult
+	
 	protected val ranks: Array[Int]
-	protected var maxIterations: Int = 25
-	protected var minFrobenius: Double = 10E-5
-	protected var initializer: (T1, Array[Int]) => Array[T2]
+	override protected[mulot] var convergenceThreshold = 10E-5
+	private[mulot] var initializer: (TensorType, Array[Int]) => Array[FactorMatricesType]
+	protected def resultToExplicitValues(result: HOOIResult): ExplicitValuesType
 	
-	protected def resultToExplicitValues(result: HOOIResult): T3
-	
-	private def internalCopy(): HOOI[T1, T2, T3] = {
-		val newObject = this.copy()
-		newObject.maxIterations = this.maxIterations
-		newObject.minFrobenius = this.minFrobenius
-		newObject.initializer = this.initializer
-		newObject
+	override protected def copy(): Return = {
+		val newDecomposition = super.copy()
+		newDecomposition.initializer = this.initializer
+		newDecomposition
 	}
 	
-	protected def copy(): HOOI[T1, T2, T3]
-	
-	case class HOOIResult(U: Array[T2], coreTensor: T1) {
+	case class HOOIResult(override val U: Array[FactorMatricesType], override val coreTensor: TensorType) extends AbstractHOOIResult[FactorMatricesType, TensorType] {
 		/**
 		 * Transform this HOOIResult object to a result with explicit values.
 		 */
-		def toExplicitValues(): T3 = resultToExplicitValues(this)
+		def toExplicitValues(): ExplicitValuesType = resultToExplicitValues(this)
 	}
 	
 	/**
 	 * Execute the HOOI decomposition with the given parameters.
 	 */
-	def execute(): HOOIResult
-	
-	/**
-	 * The maximal number of iterations to perform before stopping the algorithm if the convergence criteria is not met.
-	 *
-	 * @param maxIterations the number of iterations
-	 */
-	def withMaxIterations(maxIterations: Int): HOOI[T1, T2, T3] = {
-		val newObject = this.internalCopy()
-		newObject.maxIterations = maxIterations
-		newObject
-	}
-	
-	/**
-	 * The Frobenius norm is used as convergence criteria to determine when to stop the iteration.
-	 * It represents the similarity between the core tensors of two iterations, with a value between 0 and 1 (at 0
-	 * the core tensors are completely different, and they are the same at 1).
-	 *
-	 * @param minFrobenius the threshold of the Frobenius norm at which stopping the iteration
-	 */
-	def withMinFrobenius(minFrobenius: Double): HOOI[T1, T2, T3] = {
-		val newObject = this.internalCopy()
-		newObject.minFrobenius = minFrobenius
-		newObject
-	}
+	override def execute(): HOOIResult
 	
 	/**
 	 * Choose which method used to initialize factor matrices.
 	 *
 	 * @param initializer the method to use
 	 */
-	def withInitializer(initializer: (T1, Array[Int]) => Array[T2]): HOOI[T1, T2, T3] = {
-		val newObject = this.internalCopy()
+	def withInitializer(initializer: (TensorType, Array[Int]) => Array[FactorMatricesType]): Return = {
+		val newObject = this.copy()
 		newObject.initializer = initializer
 		newObject
 	}

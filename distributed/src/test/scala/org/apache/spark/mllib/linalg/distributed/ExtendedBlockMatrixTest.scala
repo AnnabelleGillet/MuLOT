@@ -2,10 +2,10 @@ package org.apache.spark.mllib.linalg.distributed
 
 import mulot.distributed.Tensor
 import org.apache.spark.sql.SparkSession
-import org.scalatest.FunSuite
-import org.scalatest.Matchers.convertNumericToPlusOrMinusWrapper
+import org.scalatest.funsuite.AnyFunSuite
+import org.scalatest.matchers.should.Matchers.convertNumericToPlusOrMinusWrapper
 
-class ExtendedBlockMatrixTest extends FunSuite {
+class ExtendedBlockMatrixTest extends AnyFunSuite {
 	
 	implicit val spark: SparkSession = SparkSession.builder().master("local[*]").getOrCreate()
 	spark.sparkContext.setLogLevel("WARN")

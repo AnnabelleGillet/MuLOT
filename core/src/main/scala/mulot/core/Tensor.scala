@@ -1,7 +1,6 @@
 package mulot.core
 
-trait Tensor[T] {
-	val data: T
+trait Tensor {
 	val order: Int
 	val dimensionsSize: Array[_ <: AnyVal]
 	val dimensionsName: Array[String]

@@ -2,7 +2,9 @@ package mulot.distributed
 
 import org.apache.spark.mllib.linalg.distributed.{CoordinateMatrix, IndexedRowMatrix, MatrixEntry}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.functions.{array, col, udf}
+import org.apache.spark.sql.connector.expressions.Expressions.literal
+import org.apache.spark.sql.expressions.Window
+import org.apache.spark.sql.functions.{array, col, row_number, udf}
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
 import org.apache.spark.sql.{Column, DataFrame, Row, SparkSession}
 
@@ -10,8 +12,8 @@ class Tensor (val data: DataFrame,
 			 val order: Int,
 			 val dimensionsSize: Array[Long],
 			 val dimensionsName: Array[String],
-			 val dimensionsIndex: Option[List[DataFrame]],
-			 val valueColumnName: String = "val")(implicit spark: SparkSession) extends mulot.core.Tensor[DataFrame] {
+			 val dimensionsIndex: Array[DataFrame],
+			 val valueColumnName: String = "val")(implicit spark: SparkSession) extends mulot.core.Tensor {
 	/**
 	 * Computes the forbenius norm of this [[Tensor]], by adding the absolute value of all the
 	 * values of the tensor.
@@ -67,7 +69,7 @@ class Tensor (val data: DataFrame,
 							r.getLong(r.fieldIndex("row")),
 							r.getDouble(r.fieldIndex(_valueColumnName)))
 					).rdd,
-				(for (i <- dimensionsSize.indices if i != n) yield dimensionsSize(i)).reduce(_ * _),
+				(for (i <- dimensionsSize.indices if i != n) yield dimensionsSize(i)).product,
 				dimensionsSize(n)
 			).toIndexedRowMatrix()
 		} else {
@@ -80,7 +82,7 @@ class Tensor (val data: DataFrame,
 							r.getDouble(r.fieldIndex(_valueColumnName)))
 					).rdd,
 				dimensionsSize(n),
-				(for (i <- dimensionsSize.indices if i != n) yield dimensionsSize(i)).reduce(_ * _)
+				(for (i <- dimensionsSize.indices if i != n) yield dimensionsSize(i)).product
 			).toIndexedRowMatrix()
 		}
 	}
@@ -125,6 +127,23 @@ class Tensor (val data: DataFrame,
 				r.get(r.fieldIndex(_valueColumnName)).toString.toDouble)
 			)
 	}
+	
+	private[mulot] def reindex(dimension: Int, newIndex: DataFrame): Tensor = {
+		
+		val newData = data.join(dimensionsIndex(dimension), data.col(s"row_$dimension") === dimensionsIndex(dimension).col("dimIndex"))
+			.drop(s"row_$dimension")
+			.withColumnRenamed("dimIndex", "oldIndex")
+			.join(newIndex, "dimValue")
+			.drop("dimValue", "oldIndex").withColumnRenamed("dimIndex", s"row_$dimension")
+		
+		val newIndexes = for (i <- dimensionsIndex.indices) yield {
+			if (i == dimension) newIndex else dimensionsIndex(i)
+		}
+		val newDimensionsSize = for (i <- dimensionsSize.indices) yield {
+			if (i == dimension) newIndex.count() else dimensionsSize(i)
+		}
+		new Tensor(newData, order, newDimensionsSize.toArray, dimensionsName, newIndexes.toArray)
+	}
 }
 
 object Tensor {
@@ -136,9 +155,9 @@ object Tensor {
 	 * @return [[Tensor]]
 	 */
 	def apply(data: DataFrame, valueColumnName: String = "val")(implicit spark: SparkSession): Tensor = {
-		var dimensionsIndex = List[DataFrame]()
-		var dimensionsSize = List[Long]()
-		var dimensionsName = List[String]()
+		var dimensionsIndex = Array.empty[DataFrame]
+		var dimensionsSize = Array.empty[Long]
+		var dimensionsName = Array.empty[String]
 		var tensorData = data
 		var i = 0
 		for (col <- data.columns) {
@@ -157,10 +176,10 @@ object Tensor {
 			.withColumn(valueColumnName, col(valueColumnName).cast(org.apache.spark.sql.types.DoubleType))
 		
 		new Tensor(tensorData,
-			data.columns.size - 1,
-			dimensionsSize.toArray,
-			dimensionsName.toArray,
-			Some(dimensionsIndex),
+			data.columns.length - 1,
+			dimensionsSize,
+			dimensionsName,
+			dimensionsIndex,
 			valueColumnName)
 	}
 	
@@ -173,11 +192,14 @@ object Tensor {
 	 */
 	def fromIndexedDataFrame(data: DataFrame, dimensionsSize: Array[Long], valueColumnName: String = "val")(implicit spark: SparkSession): Tensor = {
 		var tensorData = data
-		var dimensionsName = List[String]()
+		var dimensionsName = Array.empty[String]
+		var dimensionsIndex = Array.empty[DataFrame]
 		var i = 0
 		for (columnName <- data.columns) {
 			if (columnName != valueColumnName) {
 				dimensionsName :+= columnName
+				val columnIndex = data.select(columnName).distinct().withColumnRenamed(columnName, "dimValue").withColumn("dimIndex", col("dimValue").cast(org.apache.spark.sql.types.LongType))
+				dimensionsIndex :+= columnIndex
 				tensorData = tensorData
 					.withColumn(columnName, col(columnName).cast(org.apache.spark.sql.types.LongType))
 					.withColumnRenamed(columnName, s"row_$i")
@@ -189,10 +211,10 @@ object Tensor {
 			.withColumn(valueColumnName, col(valueColumnName).cast(org.apache.spark.sql.types.DoubleType))
 		
 		new Tensor(tensorData,
-			data.columns.size - 1,
+			data.columns.length - 1,
 			dimensionsSize,
-			dimensionsName.toArray,
-			None,
+			dimensionsName,
+			dimensionsIndex,
 			valueColumnName)
 	}
 	
@@ -203,6 +225,21 @@ object Tensor {
 			},
 			// Create schema for index column
 			StructType(df.withColumnRenamed(df.columns(0), "dimValue").schema.fields :+ StructField("dimIndex", LongType, false)))
+	}
+	
+	private[mulot] def reindexDimension(tensors: Array[(Tensor, Int)]): DataFrame = {
+		var newIndex = tensors.head._1.dimensionsIndex(tensors.head._2)
+		var currentSize = newIndex.count()
+		for ((tensor, dimension) <- tensors.tail) {
+			var newElements = tensor.dimensionsIndex(dimension).join(newIndex, "dimValue", "leftanti")
+			if (!newElements.head(1).isEmpty) { // Add the elements that are not already in index
+				newElements = newElements.withColumn("dimIndex", row_number().over(Window.orderBy("dimIndex")))
+				newElements = newElements.withColumn("dimIndex", col("dimIndex") + (currentSize - 1))
+				newIndex = newIndex.union(newElements)
+				currentSize += newElements.count()
+			}
+		}
+		newIndex
 	}
 }
 

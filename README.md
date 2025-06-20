@@ -106,6 +106,22 @@ val result = tucker.toExplicitValues()
 ```
 The result is a Map[String, DataFrame], with keys being the original name of each dimension, associated with a DataFrame of 3 columns: the value of the dimension, the rank, and the value found with the Tucker decomposition.
 
+## Coupled decompositions
+The library possesses implementation of coupled decompositions. They consist in executing a decomposition simultaneously on severa tensors that share at least one common dimension: the result thus benefits from each tensor.
+
+These decompositions rely on the `CoupledDimension` class to indicate how two tensors are coupled:
+```scala
+val coupledDimension = CoupledDimension(tensor1, tensor2, Map(0 -> 0))
+```
+The `Map` indicates which dimension of the first tensor is common with which dimension of the second tensor.
+
+### Coupled CANDECOMP/PARAFAC
+The call of this decomposition is similar to the non-coupled one, except that it accepts an `Array` of `Tensor`s and an `Array` of `CoupledDimension`s as parameters.
+```scala
+val rank = 3
+val coupledCPDecomposition = CoupledALS(Array(tensor1, tensor2), rank, Array(CoupledDimension(tensor1, tensor2, Map(0 -> 0))))
+```
+The result is an `Array` of `Array` of factor matrices, representing the factor matrices of each tensor.  
 
 ## Experiments
 Our implementation of the CP decomposition has been tested to compare its execution time with other CP decomposition libraries made for large-scale tensors. The notebooks can be found in the `experiments` folder. MuLOT outperforms these libraries at large-scale, while being suitable for small and medium tensors analysis. TensorLy is used as a reference of non-distributed library. 3-order tensors were used for this experiment.

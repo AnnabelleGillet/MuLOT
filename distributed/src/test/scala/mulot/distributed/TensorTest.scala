@@ -1,9 +1,12 @@
 package mulot.distributed
 
 import org.apache.spark.sql.SparkSession
-import org.scalatest.FunSuite
+import org.apache.spark.sql.functions.col
+import org.scalatest.funsuite.AnyFunSuite
+import org.scalatest.matchers.must.Matchers.contain
+import org.scalatest.matchers.should.Matchers.{convertToAnyShouldWrapper, equal}
 
-class TensorTest extends FunSuite {
+class TensorTest extends AnyFunSuite {
 	implicit val spark = SparkSession.builder().master("local[*]").getOrCreate()
 	spark.sparkContext.setLogLevel("WARN")
 	
@@ -24,6 +27,113 @@ class TensorTest extends FunSuite {
 	)
 	val mt = dataMT.toDF("row_0", "row_1", "row_2", "row_3", "val")
 	val tensor = Tensor.fromIndexedDataFrame(mt, Array(3L, 2L, 2L, 2L))
+	
+	test("test reindexation of tensor") {
+		val dataTensor1 = Seq[(Int, Int, Double)](
+			(0, 0, 1.0),
+			(2, 2, 9.0),
+			(1, 0, 2.0),
+			(2, 0, 3.0),
+			(0, 1, 4.0),
+			(1, 1, 5.0),
+			(2, 1, 6.0),
+			(0, 2, 7.0),
+			(1, 2, 8.0)
+		)
+		val tensor1 = Tensor(dataTensor1.toDF("Dim1", "Dim2", "val"))
+		
+		val dataTensor2 = Seq[(Int, Int, Double)](
+			(0, 0, 1.0),
+			(1, 0, 2.0),
+			(2, 0, 3.0),
+			(0, 1, 4.0),
+			(1, 1, 5.0),
+			(2, 1, 6.0),
+			(0, 2, 7.0),
+			(1, 2, 8.0),
+			(2, 2, 9.0)
+		)
+		val tensor2 = Tensor.fromIndexedDataFrame(dataTensor2.toDF("row_0", "row_1", "val"), Array(3, 3))
+		
+		for (i <- 0 until 2; j <- 0 until 2) {
+			val newIndex = Tensor.reindexDimension(Array((tensor1, i), (tensor2, j)))
+			val newTensor1 = tensor1.reindex(i, newIndex)
+			val newTensor2 = tensor2.reindex(j, newIndex)
+			newTensor1.dimensionsIndex(i).collect should contain theSameElementsAs newTensor2.dimensionsIndex(j).collect
+			var rebuildedTensor1 = newTensor1.data
+			for (dim <- 0 until 2) {
+				rebuildedTensor1 = rebuildedTensor1.join(newTensor1.dimensionsIndex(dim), col(s"row_$dim") === col("dimIndex"))
+					.withColumnRenamed("dimValue", s"Dim${dim + 1}")
+					.drop("dimIndex", s"row_$dim")
+			}
+			rebuildedTensor1 = rebuildedTensor1.select("Dim1", "Dim2", "val")
+			rebuildedTensor1.collect() should contain theSameElementsAs dataTensor1.toDF("Dim1", "Dim2", "val").collect()
+			var rebuildedTensor2 = newTensor2.data
+			for (dim <- 0 until 2) {
+				rebuildedTensor2 = rebuildedTensor2.join(newTensor2.dimensionsIndex(dim), col(s"row_$dim") === col("dimIndex"))
+					.withColumnRenamed("dimValue", s"Dim${dim + 1}")
+					.drop("dimIndex", s"row_$dim")
+			}
+			rebuildedTensor2 = rebuildedTensor2.select("Dim1", "Dim2", "val")
+			rebuildedTensor2.collect() should contain theSameElementsAs dataTensor2.toDF("Dim1", "Dim2", "val").collect()
+		}
+	}
+	
+	test("test reindexation of tensor with different sizes of dimensions") {
+		val dataTensor1 = Seq[(Int, Int, Double)](
+			(0, 0, 1.0),
+			(1, 0, 2.0),
+			(0, 1, 4.0),
+			(1, 1, 5.0)
+		)
+		val tensor1 = Tensor(dataTensor1.toDF("Dim1", "Dim2", "val"))
+		
+		val dataTensor2 = Seq[(Int, Int, Double)](
+			(0, 0, 1.0),
+			(1, 0, 2.0),
+			(2, 0, 3.0),
+			(0, 1, 4.0),
+			(1, 1, 5.0),
+			(2, 1, 6.0),
+			(0, 2, 7.0),
+			(1, 2, 8.0),
+			(2, 2, 9.0)
+		)
+		val tensor2 = Tensor.fromIndexedDataFrame(dataTensor2.toDF("row_0", "row_1", "val"), Array(3, 3))
+		
+		for (i <- 0 until 2; j <- 0 until 2) {
+			val newIndex = Tensor.reindexDimension(Array((tensor1, i), (tensor2, j)))
+			val newTensor1 = tensor1.reindex(i, newIndex)
+			val newTensor2 = tensor2.reindex(j, newIndex)
+			for (k <- 0 until 2) {
+				if (k != i) {
+					newTensor1.dimensionsSize(k) should equal(2)
+				}
+				if (k != j) {
+					newTensor2.dimensionsSize(k) should equal(3)
+				}
+			}
+			newTensor1.dimensionsSize(i) should equal(3)
+			newTensor2.dimensionsSize(j) should equal(3)
+			newTensor1.dimensionsIndex(i).collect should contain theSameElementsAs newTensor2.dimensionsIndex(j).collect
+			var rebuildedTensor1 = newTensor1.data
+			for (dim <- 0 until 2) {
+				rebuildedTensor1 = rebuildedTensor1.join(newTensor1.dimensionsIndex(dim), col(s"row_$dim") === col("dimIndex"))
+					.withColumnRenamed("dimValue", s"Dim${dim + 1}")
+					.drop("dimIndex", s"row_$dim")
+			}
+			rebuildedTensor1 = rebuildedTensor1.select("Dim1", "Dim2", "val")
+			rebuildedTensor1.collect() should contain theSameElementsAs dataTensor1.toDF("Dim1", "Dim2", "val").collect()
+			var rebuildedTensor2 = newTensor2.data
+			for (dim <- 0 until 2) {
+				rebuildedTensor2 = rebuildedTensor2.join(newTensor2.dimensionsIndex(dim), col(s"row_$dim") === col("dimIndex"))
+					.withColumnRenamed("dimValue", s"Dim${dim + 1}")
+					.drop("dimIndex", s"row_$dim")
+			}
+			rebuildedTensor2 = rebuildedTensor2.select("Dim1", "Dim2", "val")
+			rebuildedTensor2.collect() should contain theSameElementsAs dataTensor2.toDF("Dim1", "Dim2", "val").collect()
+		}
+	}
 	
 	test("test matricization mode 0") {
 		val dataCompareResult = Seq[(Long, Long, Double)](
