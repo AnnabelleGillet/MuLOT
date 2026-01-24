@@ -73,16 +73,29 @@ object CoupledALS extends Logging {
 		 * the matrices are completely different, and they are the same at 1). This function returns 1 minus the factor
 		 * match score.
 		 */
-		def factorMatchScore(previousResult: AbstractKruskal[Array[ExtendedBlockMatrix]], currentResult: AbstractKruskal[Array[ExtendedBlockMatrix]]): Double = {
+		def factorMatchScore(previousResult: AbstractKruskal[Array[ExtendedBlockMatrix]], currentResult: AbstractKruskal[Array[ExtendedBlockMatrix]], print: Boolean = true): Double = {
 			val begin = System.currentTimeMillis()
 			val fms = 1.0 - (for (i <- previousResult.factorMatrices.indices) yield {
 				ExtendedBlockMatrix.factorMatchScore(currentResult.factorMatrices(i), currentResult.lambdas, previousResult.factorMatrices(i), previousResult.lambdas)
 			}).sum / previousResult.factorMatrices.length
-			logger.info(s"FMS = $fms, computed in ${(System.currentTimeMillis() - begin).toDouble / 1000.0}s")
+			if (print) {
+				logger.info(s"FMS = $fms, computed in ${(System.currentTimeMillis() - begin).toDouble / 1000.0}s")
+			}
 			fms
 		}
 	}
 }
+
+/**
+ * Implementation of the De Lathauwer algorithm, with an inner normalization step to take into consideration
+ * tensors of different weight.
+ *
+ * @param tensors
+ * @param rank
+ * @param referencingTensors
+ * @param commonDimensions
+ * @param spark
+ */
 class CoupledALS private(val tensors: Array[Tensor], override val rank: Int, val referencingTensors: Array[Seq[(Tensor, Int)]], val commonDimensions: Array[Map[Int, Int]])
 						(implicit spark: SparkSession)
 	extends mulot.core.tensordecomposition.cp.ALS[Tensor, Array[ExtendedBlockMatrix], Array[Map[String, DataFrame]]]
@@ -92,14 +105,14 @@ class CoupledALS private(val tensors: Array[Tensor], override val rank: Int, val
 	override var tensor: Tensor = _
 	private[mulot] var highRank: Option[Boolean] = None
 	private[mulot] var initializer: (Array[Tensor], Int) => Array[Array[ExtendedBlockMatrix]] = CoupledALS.Initializers.gaussian
-	override private[mulot] var convergenceMethod: (Kruskal, Kruskal) => Double = CoupledALS.ConvergenceMethods.factorMatchScore
+	override private[mulot] var convergenceMethod: (Kruskal, Kruskal, Boolean) => Double = CoupledALS.ConvergenceMethods.factorMatchScore
 	
 	override protected def internalCopy(): Return = {
 		val newDecomposition = new CoupledALS(tensors, rank, referencingTensors, commonDimensions)
 		newDecomposition
 	}
 	
-	override protected def copy(): Return = {
+	override private[mulot] def copy(): Return = {
 		val newDecomposition = super.copy()
 		newDecomposition.initializer = this.initializer
 		newDecomposition.highRank = this.highRank
@@ -151,6 +164,7 @@ class CoupledALS private(val tensors: Array[Tensor], override val rank: Int, val
 		
 		var convergence = false
 		var nbIterations = 1
+		var begin = System.currentTimeMillis()
 		
 		def internalIteration(tensorIndexes: Array[Int], dimensionIndexes: Array[Int]): Unit = {
 			var factorMatrix = factorMatrices(tensorIndexes.head)(dimensionIndexes.head)
@@ -159,30 +173,14 @@ class CoupledALS private(val tensors: Array[Tensor], override val rank: Int, val
 					factorMatrices(k)(l)
 				}).reduce((m1, m2) => (m1.transpose.multiply(m1)).hadamard(m2.transpose.multiply(m2)))
 			}).reduce((m1, m2) => m1.add(m2))
+			val vInv = v.inverse()
 			
 			// MTTKRP
-			var mttkrp = if (rank > nbColsPerBlock) {
-				ExtendedBlockMatrix.mttkrpHighRankDataFrame(tensorsData(tensorIndexes.head),
-					(for (k <- factorMatrices(tensorIndexes.head).indices if dimensionIndexes.head != k) yield factorMatrices(tensorIndexes.head)(k)).toArray,
-					(for (k <- tensors(tensorIndexes.head).dimensionsSize.indices if dimensionIndexes.head != k) yield tensors(tensorIndexes.head).dimensionsSize(k)).toArray,
-					dimensionIndexes.head,
-					tensors(tensorIndexes.head).dimensionsSize(dimensionIndexes.head),
-					rank,
-					tensors(tensorIndexes.head).valueColumnName
-				)
-			} else {
-				ExtendedBlockMatrix.mttkrpDataFrame(tensorsData(tensorIndexes.head),
-					(for (k <- factorMatrices(tensorIndexes.head).indices if dimensionIndexes.head != k) yield factorMatrices(tensorIndexes.head)(k)).toArray,
-					(for (k <- tensors(tensorIndexes.head).dimensionsSize.indices if dimensionIndexes.head != k) yield tensors(tensorIndexes.head).dimensionsSize(k)).toArray,
-					dimensionIndexes.head,
-					tensors(tensorIndexes.head).dimensionsSize(dimensionIndexes.head),
-					rank,
-					tensors(tensorIndexes.head).valueColumnName
-				)
+			for (j <- 0 until rank) {
+				lambdas(j) = 0.0
 			}
-			for (i <- tensorIndexes.indices.tail) {
-				mttkrp = mttkrp.add(
-				if (rank > nbColsPerBlock) {
+			factorMatrix = (for (i <- tensorIndexes.indices) yield {
+				var matrix = if (rank > nbColsPerBlock) {
 					ExtendedBlockMatrix.mttkrpHighRankDataFrame(tensorsData(i),
 						(for (k <- factorMatrices(tensorIndexes(i)).indices if dimensionIndexes(i) != k) yield factorMatrices(tensorIndexes(i))(k)).toArray,
 						(for (k <- tensors(tensorIndexes(i)).dimensionsSize.indices if dimensionIndexes(i) != k) yield tensors(tensorIndexes(i)).dimensionsSize(k)).toArray,
@@ -200,24 +198,22 @@ class CoupledALS private(val tensors: Array[Tensor], override val rank: Int, val
 						rank,
 						tensors(tensorIndexes(i)).valueColumnName
 					)
-				})
-			}
+				}
+				matrix = (vInv.multiply(matrix.transpose)).transpose
+				val innerNormalization = if (norm == Norms.L2) {
+					factorMatrix.normL2()
+				} else {
+					factorMatrix.normL1()
+				}
+				matrix = matrix.multiplyByArray(innerNormalization.map(1.0 / _))
+				for (j <- 0 until rank) {
+					lambdas(j) += innerNormalization(j) * (1 / tensorIndexes.length)
+				}
+				matrix
+			}).reduce(_.add(_))
 			
-			factorMatrix = (v.inverse().multiply(mttkrp.transpose)).transpose
 			if (nonNegativity) {
 				factorMatrix = ExtendedBlockMatrix.fromBreeze(factorMatrix.toSparseBreeze().map(v => if (v < 0.0) 0.0 else v))
-			}
-			
-			// Compute lambdas
-			if (norm == Norms.L2) {
-				lambdas = factorMatrix.normL2()
-			} else {
-				lambdas = factorMatrix.normL1()
-			}
-			factorMatrix = if (rank > nbColsPerBlock)
-				factorMatrix.multiplyByArray(lambdas.map(l => 1 / l))
-			else {
-				factorMatrix.divideByLambdas(lambdas)
 			}
 			
 			for (i <- tensorIndexes.indices) {
@@ -227,7 +223,9 @@ class CoupledALS private(val tensors: Array[Tensor], override val rank: Int, val
 		
 		while (!convergence) {
 			val cpBegin = System.currentTimeMillis()
-			logger.info(s"iteration $nbIterations")
+			if (nbIterations % printEvery == 0) {
+				logger.info(s"iteration $nbIterations")
+			}
 			
 			// Start with common dimensions
 			for (i <- referencingTensors.indices) {
@@ -242,7 +240,7 @@ class CoupledALS private(val tensors: Array[Tensor], override val rank: Int, val
 			// Compute the convergence score
 			if (nbIterations > 1 && computeConvergence) {
 				val currentKruskal = Kruskal(for (m <- factorMatrices) yield m, for (l <- lambdas) yield l, None)
-				val convergenceScore = convergenceMethod(lastIterationKruskal, currentKruskal)
+				val convergenceScore = convergenceMethod(lastIterationKruskal, currentKruskal, nbIterations % printEvery == 0)
 				if (convergenceScore <= convergenceThreshold) {
 					convergence = true
 				}
@@ -254,7 +252,9 @@ class CoupledALS private(val tensors: Array[Tensor], override val rank: Int, val
 			lastIterationFactorMatrices = for (m <- factorMatrices) yield {for (n <- m) yield n}
 			lastIterationLambdas = for (l <- lambdas) yield l
 			
-			logger.info(s"iteration $nbIterations computed in ${(System.currentTimeMillis() - cpBegin).toDouble / 1000.0}s")
+			if (nbIterations % printEvery == 0) {
+				logger.info(s"iteration $nbIterations computed in ${(System.currentTimeMillis() - cpBegin).toDouble / 1000.0}s")
+			}
 			
 			if (nbIterations >= maxIterations) {
 				convergence = true
@@ -262,6 +262,7 @@ class CoupledALS private(val tensors: Array[Tensor], override val rank: Int, val
 				nbIterations += 1
 			}
 		}
+		logger.info(s"Coupled ALS computed in $nbIterations iterations (${(System.currentTimeMillis() - begin).toDouble / 1000.0}s)")
 		var corcondia: Option[Double] = None
 		Kruskal(factorMatrices, lambdas, corcondia)
 	}

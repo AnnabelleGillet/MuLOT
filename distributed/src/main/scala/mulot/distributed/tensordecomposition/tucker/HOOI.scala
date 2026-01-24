@@ -8,8 +8,8 @@ import scribe.Logging
 
 object HOOI extends Logging {
 	def apply(tensor: Tensor, ranks: Array[Int])(implicit spark: SparkSession): HOOI = {
-		var columnsName = (for (i <- 0 until tensor.order) yield s"row_$i") :+ tensor.valueColumnName
-		var newTensor = new Tensor(
+		val columnsName = (for (i <- 0 until tensor.order) yield s"row_$i") :+ tensor.valueColumnName
+		val newTensor = new Tensor(
 			tensor.data.select(columnsName(0), columnsName.tail: _*).cache(),
 			tensor.order,
 			tensor.dimensionsSize,
@@ -40,10 +40,10 @@ object HOOI extends Logging {
 		 * It represents the similarity between the core tensors of two iterations, with a value between 0 and 1 (at 0
 		 * the core tensors are completely different, and they are the same at 1).
 		 */
-		def frobeniusNormOnCoreTensor(originalTensor: Tensor): (AbstractHOOIResult[ExtendedIndexedRowMatrix, Tensor], AbstractHOOIResult[ExtendedIndexedRowMatrix, Tensor]) => Double = {
+		def frobeniusNormOnCoreTensor(originalTensor: Tensor): (AbstractHOOIResult[ExtendedIndexedRowMatrix, Tensor], AbstractHOOIResult[ExtendedIndexedRowMatrix, Tensor], Boolean) => Double = {
 			val originalFrobenius = originalTensor.frobeniusNorm()
 			
-			def compute(currentResult: AbstractHOOIResult[ExtendedIndexedRowMatrix, Tensor], previousResult: AbstractHOOIResult[ExtendedIndexedRowMatrix, Tensor]): Double = {
+			def compute(currentResult: AbstractHOOIResult[ExtendedIndexedRowMatrix, Tensor], previousResult: AbstractHOOIResult[ExtendedIndexedRowMatrix, Tensor], print: Boolean = true): Double = {
 				val begin = System.currentTimeMillis()
 				val frobenius = currentResult.coreTensor.frobeniusNorm()
 				val residualNorm = math.sqrt(originalFrobenius * originalFrobenius - frobenius * frobenius)
@@ -58,7 +58,9 @@ object HOOI extends Logging {
 				} / originalFrobenius)
 				
 				val score = math.abs(previousFrobeniusDifference - frobeniusDifference)
-				logger.info(s"Frobenius on core tensor = $score, computed in ${(System.currentTimeMillis() - begin).toDouble / 1000.0}s")
+				if (print) {
+					logger.info(s"Frobenius on core tensor = $score, computed in ${(System.currentTimeMillis() - begin).toDouble / 1000.0}s")
+				}
 				score
 			}
 			
@@ -74,13 +76,13 @@ class HOOI private[tucker](override var tensor: Tensor, val ranks: Array[Int])(i
 	type Return = HOOI
 	
 	override private[mulot] var initializer: (Tensor, Array[Int]) => Array[ExtendedIndexedRowMatrix] = HOOI.Initializers.hosvd
-	override private[mulot] var convergenceMethod: (HOOIResult, HOOIResult) => Double = HOOI.ConvergenceMethods.frobeniusNormOnCoreTensor(tensor)
+	override private[mulot] var convergenceMethod: (HOOIResult, HOOIResult, Boolean) => Double = HOOI.ConvergenceMethods.frobeniusNormOnCoreTensor(tensor)
 	
 	override protected def internalCopy(): Return = {
 		val newDecomposition = new HOOI(tensor, ranks)
 		newDecomposition
 	}
-	override protected def copy(): Return = {
+	override private[mulot] def copy(): Return = {
 		val newDecomposition = super.copy()
 		newDecomposition
 	}
@@ -109,7 +111,9 @@ class HOOI private[tucker](override var tensor: Tensor, val ranks: Array[Int])(i
 		
 		// Iterate while the convergence criteria is not met
 		while (!convergence && iteration <= maxIterations) {
-			logger.info(s"Iteration $iteration")
+			if (iteration % printEvery == 0) {
+				logger.info(s"Iteration $iteration")
+			}
 			val tuckerBegin = System.currentTimeMillis()
 			var previousCoreTensor = new Tensor(
 				tensor.data.cache(),
@@ -149,7 +153,7 @@ class HOOI private[tucker](override var tensor: Tensor, val ranks: Array[Int])(i
 			// of the previous iteration
 			if (computeConvergence && iteration > 1) {
 				val currentResult = HOOIResult(factorMatrices, previousCoreTensor)
-				val score = convergenceMethod(currentResult, lastIterationHOOIResult)
+				val score = convergenceMethod(currentResult, lastIterationHOOIResult, iteration % printEvery == 0)
 				if (score <= convergenceThreshold) {
 					convergence = true
 				}
@@ -162,7 +166,9 @@ class HOOI private[tucker](override var tensor: Tensor, val ranks: Array[Int])(i
 				finalCoreTensor = previousCoreTensor
 			}
 			
-			logger.info(s"Iteration $iteration computed in ${(System.currentTimeMillis() - tuckerBegin).toDouble / 1000.0}s")
+			if (iteration % printEvery == 0) {
+				logger.info(s"Iteration $iteration computed in ${(System.currentTimeMillis() - tuckerBegin).toDouble / 1000.0}s")
+			}
 			iteration += 1
 		}
 		if (finalCoreTensor == null) {
@@ -192,6 +198,7 @@ class HOOI private[tucker](override var tensor: Tensor, val ranks: Array[Int])(i
 			tensor.dimensionsIndex,
 			tensor.valueColumnName
 		)
+		logger.info(s"HOOI computed in $iteration iterations (${(System.currentTimeMillis() - begin).toDouble / 1000.0}s)")
 		
 		HOOIResult(factorMatrices, finalCoreTensor)
 	}

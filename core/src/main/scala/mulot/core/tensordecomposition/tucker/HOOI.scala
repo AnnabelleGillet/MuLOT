@@ -13,7 +13,7 @@ trait HOOI[TensorType <: Tensor, FactorMatricesType, ExplicitValuesType] extends
 	private[mulot] var initializer: (TensorType, Array[Int]) => Array[FactorMatricesType]
 	protected def resultToExplicitValues(result: HOOIResult): ExplicitValuesType
 	
-	override protected def copy(): Return = {
+	override private[mulot] def copy(): Return = {
 		val newDecomposition = super.copy()
 		newDecomposition.initializer = this.initializer
 		newDecomposition

@@ -9,7 +9,7 @@ import breeze.linalg.DenseMatrix
  * @param order the number of dimensions of the tensor (all the keys of the [[Map]] data must fit this size)
  * @param dimensionsName the name of the dimensions, in the same order as given in the keys
  */
-class Tensor private(val data: Map[Array[_], Double],
+class Tensor private[mulot](val data: Map[Array[_], Double],
 					 val order: Int,
 					 val dimensionsSize: Array[Int],
 					 val dimensionsName: Array[String],
@@ -26,8 +26,9 @@ class Tensor private(val data: Map[Array[_], Double],
 	 * @return DenseMatrix
 	 */
 	def matricization(n: Int, transpose: Boolean = false): DenseMatrix[Double] = {
-		val matrix = if (transpose) {DenseMatrix.zeros[Double](dimensionsSize.product / dimensionsSize(n), dimensionsSize(n))}
-				else {DenseMatrix.zeros[Double](dimensionsSize(n), dimensionsSize.product / dimensionsSize(n))}
+		val newDimensionSize = (for (d <- dimensionsSize.indices if d != n) yield dimensionsSize(d)).product
+		val matrix = if (transpose) {DenseMatrix.zeros[Double](newDimensionSize, dimensionsSize(n))}
+				else {DenseMatrix.zeros[Double](dimensionsSize(n), newDimensionSize)}
 		for ((k, v) <- tensorIntegerData) {
 			var j = 0
 			var coef = 1
@@ -50,7 +51,7 @@ class Tensor private(val data: Map[Array[_], Double],
 			val newKey = (for (i <- keys.indices) yield {
 				if (i == dimension) {
 					// Transform the key to the new index
-					newIndex(inverseDimensionsIndex(i)(keys(i)))
+					newIndex(inverseDimensionsIndex(dimension)(keys(i)))
 				} else {
 					keys(i)
 				}

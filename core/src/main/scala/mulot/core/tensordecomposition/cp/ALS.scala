@@ -16,7 +16,7 @@ trait ALS[TensorType <: Tensor, FactorMatricesType, ExplicitValuesType] extends 
 	
 	protected def kruskalToExplicitValues(kruskal: Kruskal): ExplicitValuesType
 	
-	override protected def copy(): Return = {
+	override private[mulot] def copy(): Return = {
 		val newDecomposition = super.copy()
 		newDecomposition.computeCorcondia = this.computeCorcondia
 		newDecomposition.norm = this.norm

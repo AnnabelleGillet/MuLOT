@@ -15,16 +15,19 @@ trait Decomposition[TensorType <: Tensor, FactorMatricesType, ExplicitValuesType
 	
 	private[mulot] var convergenceThreshold: Double
 	
-	private[core] var convergenceMethod: (DR, DR) => Double
+	private[core] var convergenceMethod: (DR, DR, Boolean) => Double
+	
+	private[mulot] var printEvery: Int = 10
 	
 	private[core] def execute(): DR
 	
-	protected def copy(): Return = {
+	private[mulot] def copy(): Return = {
 		val newDecomposition = internalCopy()
+		newDecomposition.printEvery = this.printEvery
 		newDecomposition.maxIterations = this.maxIterations
 		newDecomposition.computeConvergence = this.computeConvergence
 		newDecomposition.convergenceThreshold = this.convergenceThreshold
-		newDecomposition.convergenceMethod = this.convergenceMethod.asInstanceOf[(newDecomposition.DR, newDecomposition.DR) => Double]
+		newDecomposition.convergenceMethod = this.convergenceMethod.asInstanceOf[(newDecomposition.DR, newDecomposition.DR, Boolean) => Double]
 		newDecomposition
 	}
 	protected def internalCopy(): Return
@@ -37,6 +40,17 @@ trait Decomposition[TensorType <: Tensor, FactorMatricesType, ExplicitValuesType
 	def withMaxIterations(maxIterations: Int): Return = {
 		val newObject = this.copy()
 		newObject.maxIterations = maxIterations
+		newObject
+	}
+	
+	/**
+	 * The number of iterations to perform before printing.
+	 *
+	 * @param printEvery the number of iterations
+	 */
+	def withPrintEvery(printEvery: Int): Return = {
+		val newObject = this.copy()
+		newObject.printEvery = printEvery
 		newObject
 	}
 	
@@ -69,9 +83,9 @@ trait Decomposition[TensorType <: Tensor, FactorMatricesType, ExplicitValuesType
 	 *
 	 * @param convergenceMethod the convergence method to use.
 	 */
-	def withConvergenceMethod(convergenceMethod: (DR, DR) => Double): Return = {
+	def withConvergenceMethod(convergenceMethod: (DR, DR, Boolean) => Double): Return = {
 		val newDecomposition = copy()
-		newDecomposition.convergenceMethod = convergenceMethod.asInstanceOf[(newDecomposition.DR, newDecomposition.DR) => Double]
+		newDecomposition.convergenceMethod = convergenceMethod.asInstanceOf[(newDecomposition.DR, newDecomposition.DR, Boolean) => Double]
 		newDecomposition
 	}
 }

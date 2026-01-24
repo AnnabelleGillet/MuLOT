@@ -42,10 +42,12 @@ object ALS extends Logging {
 		 * the matrices are completely different, and they are the same at 1). This function returns 1 minus the factor
 		 * match score.
 		 */
-		def factorMatchScore(previousResult: AbstractKruskal[DenseMatrix[Double]], currentResult: AbstractKruskal[DenseMatrix[Double]]): Double = {
+		def factorMatchScore(previousResult: AbstractKruskal[DenseMatrix[Double]], currentResult: AbstractKruskal[DenseMatrix[Double]], print: Boolean = true): Double = {
 			val begin = System.currentTimeMillis()
 			val fms = 1.0 - computeFactorMatchScore(currentResult.factorMatrices, currentResult.lambdas, previousResult.factorMatrices, previousResult.lambdas)
-			logger.info(s"FMS = $fms, computed in ${(System.currentTimeMillis() - begin).toDouble / 1000.0}s")
+			if (print) {
+				logger.info(s"FMS = $fms, computed in ${(System.currentTimeMillis() - begin).toDouble / 1000.0}s")
+			}
 			fms
 		}
 	}
@@ -148,14 +150,14 @@ class ALS private(override var tensor: Tensor, val rank: Int)
 	type Return = ALS
 	
 	private[mulot] var initializer: (Tensor, Int) => Array[DenseMatrix[Double]] = ALS.Initializers.gaussian
-	override private[mulot] var convergenceMethod: (Kruskal, Kruskal) => Double = ALS.ConvergenceMethods.factorMatchScore
+	override private[mulot] var convergenceMethod: (Kruskal, Kruskal, Boolean) => Double = ALS.ConvergenceMethods.factorMatchScore
 	
 	override protected def internalCopy(): Return = {
 		val newDecomposition = new ALS(tensor, rank)
 		newDecomposition
 	}
 	
-	override protected def copy(): Return = {
+	override private[mulot] def copy(): Return = {
 		val newDecomposition = super.copy()
 		newDecomposition.initializer = this.initializer
 		newDecomposition
@@ -200,9 +202,12 @@ class ALS private(override var tensor: Tensor, val rank: Int)
 			factorMatrices(k)).reduce((m1, m2) => (m1.t * m1) *:* (m2.t * m2))
 		var convergence = false
 		var nbIterations = 1
+		var begin = System.currentTimeMillis()
 		while (!convergence) {
 			val cpBegin = System.currentTimeMillis()
-			logger.info(s"iteration $nbIterations")
+			if (nbIterations % printEvery == 0) {
+				logger.info(s"iteration $nbIterations")
+			}
 			
 			for (i <- 0 until tensor.order) {
 				// Remove current dimension from V
@@ -243,7 +248,7 @@ class ALS private(override var tensor: Tensor, val rank: Int)
 			// Compute the Factor Match Score to see if the decomposition converges
 			if (nbIterations > 1 && computeConvergence) {
 				val currentKruskal = Kruskal(for (m <- factorMatrices) yield m, for (l <- lambdas) yield l, None)
-				val convergenceScore = convergenceMethod(lastIterationKruskal, currentKruskal)
+				val convergenceScore = convergenceMethod(lastIterationKruskal, currentKruskal, nbIterations % printEvery == 0)
 				if (convergenceScore <= convergenceThreshold) {
 					convergence = true
 				}
@@ -255,7 +260,9 @@ class ALS private(override var tensor: Tensor, val rank: Int)
 			lastIterationFactorMatrices = for (m <- factorMatrices) yield m
 			lastIterationLambdas = for (l <- lambdas) yield l
 			
-			logger.info(s"iteration $nbIterations computed in ${(System.currentTimeMillis() - cpBegin).toDouble / 1000.0}s")
+			if (nbIterations % printEvery == 0) {
+				logger.info(s"iteration $nbIterations computed in ${(System.currentTimeMillis() - cpBegin).toDouble / 1000.0}s")
+			}
 			
 			// Check if the iterations must stop
 			if (nbIterations >= maxIterations) {
@@ -264,6 +271,8 @@ class ALS private(override var tensor: Tensor, val rank: Int)
 				nbIterations += 1
 			}
 		}
+		
+		logger.info(s"ALS computed in $nbIterations iterations (${(System.currentTimeMillis() - begin).toDouble / 1000.0}s)")
 		
 		// If required, compute CORCONDIA
 		val corcondia = if (computeCorcondia) {

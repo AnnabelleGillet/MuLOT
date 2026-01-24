@@ -34,10 +34,12 @@ object ALS extends Logging {
 		 * the matrices are completely different, and they are the same at 1). This function returns 1 minus the factor
 		 * match score.
 		 */
-		def factorMatchScore(previousResult: AbstractKruskal[ExtendedBlockMatrix], currentResult: AbstractKruskal[ExtendedBlockMatrix]): Double = {
+		def factorMatchScore(previousResult: AbstractKruskal[ExtendedBlockMatrix], currentResult: AbstractKruskal[ExtendedBlockMatrix], print: Boolean = true): Double = {
 			val begin = System.currentTimeMillis()
 			val fms = 1.0 - ExtendedBlockMatrix.factorMatchScore(currentResult.factorMatrices, currentResult.lambdas, previousResult.factorMatrices, previousResult.lambdas)
-			logger.info(s"FMS = $fms, computed in ${(System.currentTimeMillis() - begin).toDouble / 1000.0}s")
+			if (print) {
+				logger.info(s"FMS = $fms, computed in ${(System.currentTimeMillis() - begin).toDouble / 1000.0}s")
+			}
 			fms
 		}
 	}
@@ -52,13 +54,13 @@ class ALS private(override var tensor: Tensor, val rank: Int)(implicit spark: Sp
 	private[mulot] var highRank: Option[Boolean] = None
 	private[mulot] var initializer: (Tensor, Int) => Array[ExtendedBlockMatrix] = ALS.Initializers.gaussian
 	
-	override private[mulot] var convergenceMethod: (Kruskal, Kruskal) => Double = ALS.ConvergenceMethods.factorMatchScore
+	override private[mulot] var convergenceMethod: (Kruskal, Kruskal, Boolean) => Double = ALS.ConvergenceMethods.factorMatchScore
 	
 	override protected def internalCopy(): ALS = {
 		val newDecomposition = new ALS(tensor, rank)
 		newDecomposition
 	}
-	override protected def copy(): Return = {
+	override private[mulot] def copy(): Return = {
 		val newDecomposition = super.copy()
 		newDecomposition.highRank = this.highRank
 		newDecomposition.initializer = this.initializer
@@ -106,9 +108,12 @@ class ALS private(override var tensor: Tensor, val rank: Int)(implicit spark: Sp
 			factorMatrices(k)).reduce((m1, m2) => (m1.transpose.multiply(m1)).hadamard(m2.transpose.multiply(m2)))
 		var convergence = false
 		var nbIterations = 1
+		var begin = System.currentTimeMillis()
 		while (!convergence) {
 			val cpBegin = System.currentTimeMillis()
-			logger.info(s"iteration $nbIterations")
+			if (nbIterations % printEvery == 0) {
+				logger.info(s"iteration $nbIterations")
+			}
 			for (i <- 0 until tensor.order) {
 				// Remove current dimension from V
 				if (factorMatrices(i) != null) {
@@ -161,7 +166,7 @@ class ALS private(override var tensor: Tensor, val rank: Int)(implicit spark: Sp
 			// Compute the convergence score
 			if (nbIterations > 1 && computeConvergence) {
 				val currentKruskal = Kruskal(for (m <- factorMatrices) yield m, for (l <- lambdas) yield l, None)
-				val convergenceScore = convergenceMethod(lastIterationKruskal, currentKruskal)
+				val convergenceScore = convergenceMethod(lastIterationKruskal, currentKruskal, nbIterations % printEvery == 0)
 				if (convergenceScore <= convergenceThreshold) {
 					convergence = true
 				}
@@ -171,7 +176,9 @@ class ALS private(override var tensor: Tensor, val rank: Int)(implicit spark: Sp
 			lastIterationLambdas = for (l <- lambdas) yield l
 			lastIterationKruskal = Kruskal(for (m <- factorMatrices) yield m, for (l <- lambdas) yield l, None)
 			
-			logger.info(s"iteration $nbIterations computed in ${(System.currentTimeMillis() - cpBegin).toDouble / 1000.0}s")
+			if (nbIterations % printEvery == 0) {
+				logger.info(s"iteration $nbIterations computed in ${(System.currentTimeMillis() - cpBegin).toDouble / 1000.0}s")
+			}
 			
 			if (nbIterations >= maxIterations) {
 				convergence = true
@@ -179,10 +186,11 @@ class ALS private(override var tensor: Tensor, val rank: Int)(implicit spark: Sp
 				nbIterations += 1
 			}
 		}
+		logger.info(s"ALS computed in $nbIterations iterations (${(System.currentTimeMillis() - begin).toDouble / 1000.0}s)")
 		
 		var corcondia: Option[Double] = None
 		if (computeCorcondia) {
-			val begin = System.currentTimeMillis()
+			begin = System.currentTimeMillis()
 			corcondia = Some(ExtendedBlockMatrix.corcondia(tensorData, tensor.dimensionsSize,
 				factorMatrices(0).divideByLambdas(lambdas) +: factorMatrices.tail, rank, tensor.valueColumnName))
 			logger.info(s"CORCONDIA = ${corcondia.get}, computed in ${(System.currentTimeMillis() - begin).toDouble / 1000.0}s")
