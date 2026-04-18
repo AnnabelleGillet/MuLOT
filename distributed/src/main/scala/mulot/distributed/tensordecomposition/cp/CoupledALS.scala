@@ -16,7 +16,7 @@ object CoupledALS extends Logging {
 		}
 		
 		var nbDifferentCommonDimensions = 0
-		var referencingTensors = scala.collection.mutable.MutableList.empty[Seq[(Tensor, Int)]]
+		var referencingTensors = scala.collection.mutable.ArrayDeque.empty[Seq[(Tensor, Int)]]
 		coupledDimensions.foreach(e => {
 			assert(_tensors.contains(e.tensor1), s"Tensor ${e.tensor1} not in tensors.")
 			assert(_tensors.contains(e.tensor2), s"Tensor ${e.tensor2} not in tensors.")
@@ -96,7 +96,7 @@ object CoupledALS extends Logging {
  * @param commonDimensions
  * @param spark
  */
-class CoupledALS private(val tensors: Array[Tensor], override val rank: Int, val referencingTensors: Array[Seq[(Tensor, Int)]], val commonDimensions: Array[Map[Int, Int]])
+class CoupledALS private(val tensors: Array[Tensor], override var rank: Int, val referencingTensors: Array[Seq[(Tensor, Int)]], val commonDimensions: Array[Map[Int, Int]])
 						(implicit spark: SparkSession)
 	extends mulot.core.tensordecomposition.cp.ALS[Tensor, Array[ExtendedBlockMatrix], Array[Map[String, DataFrame]]]
 	with Logging {

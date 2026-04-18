@@ -8,7 +8,7 @@ trait ALS[TensorType <: Tensor, FactorMatricesType, ExplicitValuesType] extends 
 	type Return <: ALS[TensorType, FactorMatricesType, ExplicitValuesType]
 	type DR = Kruskal
 	
-	protected val rank: Int
+	protected var rank: Int
 	override private[mulot] var convergenceThreshold: Double = 0.01
 	private[mulot] var computeCorcondia: Boolean = false
 	private[mulot] var norm: Norms.Norm = Norms.L2
@@ -35,6 +35,12 @@ trait ALS[TensorType <: Tensor, FactorMatricesType, ExplicitValuesType] extends 
 	 * Execute the CP decomposition with the given parameters.
 	 */
 	override def execute(): Kruskal
+	
+	private[mulot] def withRank(_rank: Int): Return = {
+		val newObject = this.copy()
+		newObject.rank = _rank
+		newObject
+	}
 	
 	/**
 	 * The norm to use to normalize the factor matrices.

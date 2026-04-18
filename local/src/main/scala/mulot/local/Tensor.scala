@@ -18,6 +18,16 @@ class Tensor private[mulot](val data: Map[Array[_], Double],
 					 val tensorIntegerData: Map[Array[Int], Double]
 			) extends mulot.core.Tensor {
 	/**
+	 * Computes the forbenius norm of this [[Tensor]], by adding the absolute value of all the
+	 * values of the tensor.
+	 */
+	def frobeniusNorm(): Double = {
+		math.sqrt(data.values.aggregate(0.0)((v, r) => {
+			v + (r * r)
+		}, _ + _))
+	}
+	
+	/**
 	 * Matricize the tensor on the mode n.
 	 *
 	 * @param n the mode of the matricization.

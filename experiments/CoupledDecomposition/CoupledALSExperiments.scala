@@ -74,9 +74,9 @@ object CoupledALSExperimentsV2 {
 		baselineDecomposition(mainTensor, 4)
 		simpleExperiment(mainTensor, secondTensor, 4)
 		
-		for (n <- List(10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0)) {
+		/*for (n <- List(10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0)) {
 			missingDataExperiment(mainTensorData, secondTensor, 4, n / 100)
-		}
+		}*/
 
 		for (n <- List(10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0)) {
 			noisyDataExperiment(mainTensorData, secondTensorData, 4, n / 100)
@@ -137,7 +137,7 @@ object CoupledALSExperimentsV2 {
 	def missingDataExperiment(mainTensorData: Map[Array[Int], Double], secondTensor: Tensor, rank: Int, missingDataPercent: Double): Unit = {
 		var removedKeys = (createNoise((10 * 10 * missingDataPercent).toInt, 0 until 10, (for (d2 <- 0 until 10; d3 <- 0 until 10) yield (d2, d3)).toArray) ++ createNoise((10 * 10 * missingDataPercent).toInt, 10 until 20, (for (d2 <- 10 until 20; d3 <- 10 until 20) yield (d2, d3)).toArray) ++ createNoise((10 * 10 * missingDataPercent).toInt, 20 until 30, (for (d2 <- 20 until 30; d3 <- 20 until 30) yield (d2, d3)).toArray)).keys.toArray
 		
-		val newMainTensorData = mainTensorData.filterKeys(k => !removedKeys.exists(k2 => k2.sameElements(k)))
+		val newMainTensorData = mainTensorData.filterKeys(k => !removedKeys.exists(k2 => k2.sameElements(k))).toMap
 		val newMainTensor = Tensor.fromIndexedMap(newMainTensorData, 3, Array(30, 30, 30), Array("dimension1", "dimension2", "dimension3"))
 		
 		// Coupled decomposition
@@ -147,9 +147,13 @@ object CoupledALSExperimentsV2 {
 		val resultCoupledDecomposition = coupledDecomposition.execute()
 		
 		// Clusterize
-		val clusters = clusterize(resultCoupledDecomposition.A(0)(0))
-		println(s"Index for ${missingDataPercent * 100}% missing data experiment (proposed algorithm):")
-		evaluateClusters(clusters, resultCoupledDecomposition.A(0)(0))
+		if (resultCoupledDecomposition.A(0).nonEmpty) {
+			val clusters = clusterize(resultCoupledDecomposition.A(0)(0))
+			println(s"Index for ${missingDataPercent * 100}% missing data experiment (proposed algorithm):")
+			evaluateClusters(clusters, resultCoupledDecomposition.A(0)(0))
+		} else {
+			println(s"No result for ${missingDataPercent * 100}% missing data experiment (proposed algorithm).")
+		}
 
 		// Produce vizualisation of result
 		plotMatrix(resultCoupledDecomposition.A(0)(0), s"Missing data experiment with ${missingDataPercent * 100}% of missing data (proposed algorithm)")
@@ -197,7 +201,7 @@ object CoupledALSExperimentsV2 {
 		plotMatrix(resultCoupledDecomposition.A(0)(0), s"Noisy data experiment with ${noisePercent * 100}% of noise (proposed algorithm)")
 		
 		// De Lathauwer
-		val coupledDecompositionDL = CoupledALS(Array(newMainTensor, newSecondTensor), rank, Array(CoupledDimension(newMainTensor, newSecondTensor, Map(0 -> 0)))).withMaxIterations(500).withPrintEvery(100)//.withInitializer(CoupledALS.Initializers.hosvd)
+		val coupledDecompositionDL = CoupledALS(Array(newMainTensor, newSecondTensor), rank, Array(CoupledDimension(newMainTensor, newSecondTensor, Map(0 -> 0)))).withMaxIterations(500).withPrintEvery(100)//.withInitializer(CoupledALS.Initializers.fixed(resultCoupledDecomposition.A))
 		val resultCoupledDecompositionDL = coupledDecompositionDL.execute()
 		
 		// Clusterize

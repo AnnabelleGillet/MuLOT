@@ -19,6 +19,8 @@ trait Decomposition[TensorType <: Tensor, FactorMatricesType, ExplicitValuesType
 	
 	private[mulot] var printEvery: Int = 10
 	
+	private[mulot] var fixedDimensions: List[Int] = List[Int]()
+	
 	private[core] def execute(): DR
 	
 	private[mulot] def copy(): Return = {
@@ -28,6 +30,7 @@ trait Decomposition[TensorType <: Tensor, FactorMatricesType, ExplicitValuesType
 		newDecomposition.computeConvergence = this.computeConvergence
 		newDecomposition.convergenceThreshold = this.convergenceThreshold
 		newDecomposition.convergenceMethod = this.convergenceMethod.asInstanceOf[(newDecomposition.DR, newDecomposition.DR, Boolean) => Double]
+		newDecomposition.fixedDimensions = this.fixedDimensions
 		newDecomposition
 	}
 	protected def internalCopy(): Return
@@ -86,6 +89,17 @@ trait Decomposition[TensorType <: Tensor, FactorMatricesType, ExplicitValuesType
 	def withConvergenceMethod(convergenceMethod: (DR, DR, Boolean) => Double): Return = {
 		val newDecomposition = copy()
 		newDecomposition.convergenceMethod = convergenceMethod.asInstanceOf[(newDecomposition.DR, newDecomposition.DR, Boolean) => Double]
+		newDecomposition
+	}
+	
+	/**
+	 * Set the dimensions that must not be updated during the execution of the algorithm.
+	 *
+	 * @param fixedDimensions the fixed dimensions (true for fixed, false otherwise).
+	 */
+	def withFixedDimensions(fixedDimensions: List[Int]): Return = {
+		val newDecomposition = copy()
+		newDecomposition.fixedDimensions = fixedDimensions
 		newDecomposition
 	}
 }

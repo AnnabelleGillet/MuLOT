@@ -45,8 +45,7 @@ class ExtendedIndexedRowMatrix(rows: RDD[IndexedRow],
 			// Produce a RDD of Row
 			.map { case (key, value) => {
 				Row.fromSeq(key :+ value)
-			}
-			}
+			}}
 		
 		// Convert to a Tensor
 		new Tensor(spark.createDataFrame(newTensorData, tensor.data.schema),

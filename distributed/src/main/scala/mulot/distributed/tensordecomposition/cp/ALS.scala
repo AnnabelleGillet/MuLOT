@@ -14,6 +14,10 @@ object ALS extends Logging {
 	}
 	
 	object Initializers {
+		def fixed(factorMatrices: Array[ExtendedBlockMatrix])(tensor: Tensor, rank: Int)(implicit spark: SparkSession): Array[ExtendedBlockMatrix] = {
+			factorMatrices.clone()
+		}
+		
 		def gaussian(tensor: Tensor, rank: Int)(implicit spark: SparkSession): Array[ExtendedBlockMatrix] = {
 			(for (i <- 0 until tensor.order) yield {
 				ExtendedBlockMatrix.gaussian(tensor.dimensionsSize(i), rank)
@@ -45,7 +49,7 @@ object ALS extends Logging {
 	}
 }
 
-class ALS private(override var tensor: Tensor, val rank: Int)(implicit spark: SparkSession)
+class ALS private(override var tensor: Tensor, override var rank: Int)(implicit spark: SparkSession)
 	extends cp.ALS[Tensor, ExtendedBlockMatrix, Map[String, DataFrame]]
 		with Logging {
 	
@@ -114,7 +118,7 @@ class ALS private(override var tensor: Tensor, val rank: Int)(implicit spark: Sp
 			if (nbIterations % printEvery == 0) {
 				logger.info(s"iteration $nbIterations")
 			}
-			for (i <- 0 until tensor.order) {
+			for (i <- 0 until tensor.order if !fixedDimensions.contains(i)) {
 				// Remove current dimension from V
 				if (factorMatrices(i) != null) {
 					v = v.hadamard(factorMatrices(i).transpose.multiply(factorMatrices(i)), (m1, m2) => (m1 /:/ m2).toDenseMatrix.map(x => if (x.isNaN) 0.0 else x))

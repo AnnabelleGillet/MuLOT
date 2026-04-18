@@ -15,7 +15,7 @@ object CoupledALS extends Logging {
 		}
 		
 		var nbDifferentCommonDimensions = 0
-		var referencingTensors = scala.collection.mutable.MutableList.empty[Seq[(Tensor, Int)]]
+		var referencingTensors = scala.collection.mutable.ArrayDeque.empty[Seq[(Tensor, Int)]]
 		coupledDimensions.foreach(e => {
 			assert(_tensors.contains(e.tensor1), s"Tensor ${e.tensor1} not in tensors.")
 			assert(_tensors.contains(e.tensor2), s"Tensor ${e.tensor2} not in tensors.")
@@ -57,6 +57,10 @@ object CoupledALS extends Logging {
 	}
 	
 	object Initializers {
+		def fixed(factorMatrices: Array[Array[DenseMatrix[Double]]])(tensors: Array[Tensor], rank: Int): Array[Array[DenseMatrix[Double]]] = {
+			factorMatrices.clone()
+		}
+		
 		def gaussian(tensors: Array[Tensor], rank: Int): Array[Array[DenseMatrix[Double]]] = {
 			for (tensor <- tensors) yield {
 				ALS.Initializers.gaussian(tensor, rank)
@@ -99,7 +103,7 @@ object CoupledALS extends Logging {
  * @param referencingTensors
  * @param commonDimensions
  */
-class CoupledALS private(val tensors: Array[Tensor], override val rank: Int, val referencingTensors: Array[Seq[(Tensor, Int)]], val commonDimensions: Array[Map[Int, Int]]) extends mulot.core.tensordecomposition.cp.ALS[Tensor, Array[DenseMatrix[Double]], Array[Map[String, Array[Map[Any, Double]]]]]
+class CoupledALS private(val tensors: Array[Tensor], override var rank: Int, val referencingTensors: Array[Seq[(Tensor, Int)]], val commonDimensions: Array[Map[Int, Int]]) extends mulot.core.tensordecomposition.cp.ALS[Tensor, Array[DenseMatrix[Double]], Array[Map[String, Array[Map[Any, Double]]]]]
 		with Logging {
 	type Return = CoupledALS
 	
@@ -148,7 +152,10 @@ class CoupledALS private(val tensors: Array[Tensor], override val rank: Int, val
 		val tensorsData = for (t <- tensors) yield t.tensorIntegerData
 		
 		// Factor matrices initialization
-		val factorMatrices = initializer(tensors, rank)
+		val factorMatrices = initializer(tensors, this.rank)
+		/*val rank = if (factorMatrices(0).length != this.rank) {
+			factorMatrices(0).length
+		} else this.rank*/
 		var lastIterationFactorMatrices = new Array[Array[DenseMatrix[Double]]](tensors.length)
 		
 		// Lambda initialization
@@ -158,7 +165,7 @@ class CoupledALS private(val tensors: Array[Tensor], override val rank: Int, val
 		
 		var convergence = false
 		var nbIterations = 1
-		var begin = System.currentTimeMillis()
+		val begin = System.currentTimeMillis()
 		
 		def internalIteration(tensorIndexes: Array[Int], dimensionIndexes: Array[Int]): Unit = {
 			var factorMatrix = factorMatrices(tensorIndexes.head)(dimensionIndexes.head)
@@ -228,7 +235,7 @@ class CoupledALS private(val tensors: Array[Tensor], override val rank: Int, val
 						toFlip :+= (i, j, r)
 					}
 				}
-				for (i <- 0 until toFlip.size by 2) {
+				for (i <- toFlip.indices by 2) {
 					if (i + 1 < toFlip.size) {
 						val flip1 = toFlip(i)
 						val flip2 = toFlip(i + 1)

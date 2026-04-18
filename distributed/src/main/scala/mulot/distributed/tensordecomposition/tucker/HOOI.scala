@@ -161,15 +161,16 @@ class HOOI private[tucker](override var tensor: Tensor, val ranks: Array[Int])(i
 			
 			lastIterationHOOIResult = HOOIResult(factorMatrices, previousCoreTensor)
 			
-			// Keep the final core tensor if the convergence criteria is met
-			if (convergence || iteration >= maxIterations) {
-				finalCoreTensor = previousCoreTensor
-			}
-			
 			if (iteration % printEvery == 0) {
 				logger.info(s"Iteration $iteration computed in ${(System.currentTimeMillis() - tuckerBegin).toDouble / 1000.0}s")
 			}
-			iteration += 1
+			
+			// Keep the final core tensor if the convergence criteria is met
+			if (convergence || iteration >= maxIterations) {
+				finalCoreTensor = previousCoreTensor
+			} else {
+				iteration += 1
+			}
 		}
 		if (finalCoreTensor == null) {
 			finalCoreTensor = new Tensor(

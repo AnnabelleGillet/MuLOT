@@ -9,6 +9,7 @@ import mulot.core.tensordecomposition.cp.Norms
 import mulot.local.Tensor
 import mulot.local.tensordecomposition.cp.ALS.Initializers
 import scribe.Logging
+import scala.collection.parallel.CollectionConverters._
 
 object ALS extends Logging {
 	def apply(tensor: Tensor, rank: Int): ALS = {
@@ -16,6 +17,10 @@ object ALS extends Logging {
 	}
 	
 	object Initializers {
+		def fixed(factorMatrices: Array[DenseMatrix[Double]])(tensor: Tensor, rank: Int): Array[DenseMatrix[Double]] = {
+			factorMatrices.clone()
+		}
+		
 		def gaussian(tensor: Tensor, rank: Int): Array[DenseMatrix[Double]] = {
 			(for (i <- 0 until tensor.order) yield {
 				val matrix = abs(DenseMatrix.rand(tensor.dimensionsSize(i), rank, breeze.stats.distributions.Gaussian(0.01, 1.0)))
@@ -143,7 +148,7 @@ object ALS extends Logging {
 	}
 }
 
-class ALS private(override var tensor: Tensor, val rank: Int)
+class ALS private(override var tensor: Tensor, override var rank: Int)
 	extends mulot.core.tensordecomposition.cp.ALS[Tensor, DenseMatrix[Double], Map[String, Array[Map[Any, Double]]]]
 		with Logging {
 	
@@ -200,16 +205,19 @@ class ALS private(override var tensor: Tensor, val rank: Int)
 		// V is updated for each dimension rather than recalculated
 		var v = (for (k <- 1 until factorMatrices.length) yield
 			factorMatrices(k)).reduce((m1, m2) => (m1.t * m1) *:* (m2.t * m2))
+		if (fixedDimensions.contains(0)) {
+			v = v *:* (factorMatrices(0).t * factorMatrices(0))
+		}
 		var convergence = false
 		var nbIterations = 1
-		var begin = System.currentTimeMillis()
+		val begin = System.currentTimeMillis()
 		while (!convergence) {
 			val cpBegin = System.currentTimeMillis()
 			if (nbIterations % printEvery == 0) {
 				logger.info(s"iteration $nbIterations")
 			}
 			
-			for (i <- 0 until tensor.order) {
+			for (i <- 0 until tensor.order if !fixedDimensions.contains(i)) {
 				// Remove current dimension from V
 				if (nbIterations > 1 || i > 0) {
 					v = (v /:/ (factorMatrices(i).t * factorMatrices(i))).map(x => if (x.isNaN) 0.0 else x)
@@ -265,7 +273,7 @@ class ALS private(override var tensor: Tensor, val rank: Int)
 			}
 			
 			// Check if the iterations must stop
-			if (nbIterations >= maxIterations) {
+			if (nbIterations >= maxIterations || convergence) {
 				convergence = true
 			} else {
 				nbIterations += 1
