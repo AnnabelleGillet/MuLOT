@@ -9,8 +9,8 @@ The optimization of the library is a major concern, and it outperforms the state
 Put the chosen jar (local or distributed) in the `lib` directory, at the root of your Scala project. If the distributed version is chosen, Spark must be imported in `built.sbt`:
 
 ```scala
-libraryDependencies += "org.apache.spark" %% "spark-sql" % "3.2.0"
-libraryDependencies += "org.apache.spark" %% "spark-mllib" % "3.2.0"
+libraryDependencies += "org.apache.spark" %% "spark-sql" % "3.5.8"
+libraryDependencies += "org.apache.spark" %% "spark-mllib" % "3.5.8"
 ```
 
 ## Building tensors
@@ -81,6 +81,7 @@ The return type of this method is different in the local and in the distributed 
 ## The Tucker decomposition
 Import the decomposition:
 ```scala
+import mulot.local.tensordecomposition.tucker // For the local implementation
 import mulot.distributed.tensordecomposition.tucker // For the distributed implementation
 ```
 
@@ -116,10 +117,17 @@ val coupledDimension = CoupledDimension(tensor1, tensor2, Map(0 -> 0))
 The `Map` indicates which dimension of the first tensor is common with which dimension of the second tensor.
 
 ### Coupled CANDECOMP/PARAFAC
-The call of this decomposition is similar to the non-coupled one, except that it accepts an `Array` of `Tensor`s and an `Array` of `CoupledDimension`s as parameters.
+The call of this decomposition is similar to the non-coupled one, except that it accepts an `Array` of `Tensor`s and an `Array` of `CoupledDimension`s as parameters. It is an implementation of the [De Lathauwer algorithm](https://epubs.siam.org/doi/10.1137/140956865). 
 ```scala
 val rank = 3
 val coupledCPDecomposition = CoupledALS(Array(tensor1, tensor2), rank, Array(CoupledDimension(tensor1, tensor2, Map(0 -> 0))))
+```
+The result is an `Array` of `Array` of factor matrices, representing the factor matrices of each tensor.  
+
+### Coupled ALS CANDECOMP/PARAFAC
+An other version of coupled CP decomposition that we propose is available. It takes as input an Array of non-coupled CP decomposition and an Array indicating the coupled dimension for each tensor associated to the input decompositions. 
+```scala
+val coupledCPDecomposition = new CoupledCP(Array(decomposition1, decomposition2), Array(0, 0))
 ```
 The result is an `Array` of `Array` of factor matrices, representing the factor matrices of each tensor.  
 
