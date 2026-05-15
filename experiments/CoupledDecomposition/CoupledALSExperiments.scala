@@ -56,7 +56,7 @@ object CoupledALSExperimentsV2 {
 	}
 
 	// Execute with "scala -classpath lib/*:. CoupledALSExperiments.scala"
-	// Scala version used: 2.12.20
+	// Scala version used: 3.3.3
 	def main(args: Array[String]): Unit = {
 		// Build main tensor: 3 clusters that span over 10 elements of each dimension.
 		var mainTensorData = Map[Array[Int], Double]()
@@ -74,9 +74,9 @@ object CoupledALSExperimentsV2 {
 		baselineDecomposition(mainTensor, 4)
 		simpleExperiment(mainTensor, secondTensor, 4)
 		
-		/*for (n <- List(10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0)) {
+		for (n <- List(10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0)) {
 			missingDataExperiment(mainTensorData, secondTensor, 4, n / 100)
-		}*/
+		}
 
 		for (n <- List(10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0)) {
 			noisyDataExperiment(mainTensorData, secondTensorData, 4, n / 100)
