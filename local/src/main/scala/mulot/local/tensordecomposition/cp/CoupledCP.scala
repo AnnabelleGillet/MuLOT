@@ -1,11 +1,12 @@
 package mulot.local.tensordecomposition.cp
 
-import breeze.linalg.{DenseMatrix, DenseVector, chebyshevDistance, cosineDistance, euclideanDistance, inv, manhattanDistance, max, min, minkowskiDistance, squaredDistance}
-import breeze.numerics.abs
-import mulot.core.tensordecomposition.{AbstractKruskal, CoupledDimension}
+import breeze.linalg.{DenseMatrix, DenseVector, cosineDistance, max, min, sum}
 import mulot.core.tensordecomposition.cp.Norms
 import mulot.local.Tensor
 import scribe.Logging
+
+import scala.collection.parallel.CollectionConverters.ImmutableSeqIsParallelizable
+import scala.util.control.Breaks.break
 
 object CoupledCP extends Logging {
 	def apply(decompositions: Array[ALS], commonDimensions: Array[Int]): CoupledCP = {
@@ -20,16 +21,177 @@ object CoupledCP extends Logging {
 		}).toArray
 		new CoupledCP(newDecompositions, commonDimensions)
 	}
+	
+	object MergingScores {
+		def entropy(mergedVector: DenseVector[Double], factors: List[DenseVector[Double]]): Double = {
+			- mergedVector.mapValues(v => v * math.log(v)).data.sum / mergedVector.length
+		}
+		
+		def cosineSimilarity(mergedVector: DenseVector[Double], factors: List[DenseVector[Double]]): Double = {
+			(for (factor <- factors) yield cosineDistance(mergedVector, factor)).min
+		}
+		
+		def kendallCorrelation(mergedVector: DenseVector[Double], factors: List[DenseVector[Double]]): Double = {
+			(for (factor <- factors) yield {
+				(2.0 / (mergedVector.length * (mergedVector.length - 1))) * (for (i <- mergedVector.data.indices; j <- i + 1 until mergedVector.length) yield {
+					mergedVector(i).compare(mergedVector(j)) * factor(i).compare(factor(j))
+				}).sum
+			}).min
+		}
+		
+		def weightedKendallCorrelation(_mergedVector: DenseVector[Double], factors: List[DenseVector[Double]]): Double = {
+			// Sort merged vector to not have to compute the order comparison for its elements
+			val sortedMergedVector = _mergedVector.iterator.toArray.sortBy(_._2).reverse
+			val mergedVector = sortedMergedVector.map(_._2)
+			val logMergedVector = mergedVector.map(math.log) // Precompute log
+			
+			var score = 1.0
+			for (_factor <- factors.par) {
+				// Follow the order of elements of the merged vector
+				val factor = sortedMergedVector.map(v => _factor(v._1))
+				val logFactor = factor.map(math.log) // Precompute log
+				var res = 0.0
+				var fact = 0.0
+				var index = mergedVector.indices.tail
+				
+				for (i <- mergedVector.indices) {
+					val logMergedVectorI = logMergedVector(i)
+					
+					for (j <- index) {
+						val logFactorJ = logFactor(j)
+						// Compute the weight
+						var weight = (mergedVector.length - i) * mergedVector(i) * math.max(1.0 / mergedVector.length, logMergedVectorI - logFactorJ)
+						
+						if (weight.isInfinity) weight = (mergedVector.length - i) * mergedVector(i)
+						else if (weight.isNaN) weight = 1.0
+						
+						res += weight * weight * (if (factor(i) >= factor(j)) 1.0 else -1.0)
+						fact += weight * weight
+					}
+					if (index.nonEmpty) {
+						index = index.tail
+					}
+				}
+				score.synchronized {
+					if (score > (res / fact)) {
+						score = res / fact
+					}
+				}
+			}
+			mergedVector(0) * score
+		}
+		
+		/**
+		 * Fast approximation of the Weighted Kendall Correlation. Stop the computation if the result will not change
+		 * regarding the threshold.
+		 *
+		 * @param threshold
+		 * @param _mergedVector
+		 * @param factors
+		 * @return
+		 */
+		def approximatedWeightedKendallCorrelation(threshold: Double, print: Boolean = false)(_mergedVector: DenseVector[Double], factors: List[DenseVector[Double]]): Double = {
+			// Sort merged vector to not have to compute the order comparison for its elements
+			val sortedMergedVector = _mergedVector.iterator.toArray.sortBy(_._2).reverse
+			val mergedVector = sortedMergedVector.map(_._2)
+			
+			if (mergedVector(0) > threshold) {
+				val realThreshold = threshold / mergedVector(0)
+				val logMergedVector = mergedVector.map(math.log) // Precompute log
+				
+				var score = 1.0
+				
+				for (_factor <- factors.par) {
+					// Follow the order of elements of the merged vector
+					val factor = sortedMergedVector.map(v => _factor(v._1))
+					val logFactor = factor.map(math.log) // Precompute log
+					
+					val logFactorMin = new Array[Double](logFactor.length)
+					logFactorMin(logFactor.length - 1) = logFactor.last
+					
+					var k = logFactor.length - 2
+					while (k >= 0) {
+						logFactorMin(k) = math.min(logFactor(k), logFactorMin(k + 1))
+						k -= 1
+					}
+					
+					var index = mergedVector.indices.tail
+					
+					var res = 0.0
+					var fact = 0.0
+					
+					scala.util.control.Breaks.breakable {
+						for (i <- mergedVector.indices) {
+							val logMergedVectorI = logMergedVector(i)
+							if (mergedVector(i) < threshold && i < mergedVector.length - 1 && logMergedVectorI - logFactorMin(i + 1) >= 0) {
+								var maxApproximatedScore = (mergedVector.length - i) * mergedVector(i) * math.max(1.0 / mergedVector.length, logMergedVectorI - logFactorMin(i + 1))
+								maxApproximatedScore *= maxApproximatedScore
+								maxApproximatedScore *= (mergedVector.length - i) * index.length
+								if ((((res - maxApproximatedScore) / (fact + maxApproximatedScore)) > realThreshold) || // Already above threshold and can't get down
+									(((res + maxApproximatedScore) / (fact + maxApproximatedScore)) < realThreshold)) { // Already below threshold and can't get up
+									if (print) {
+										logger.info(s"Break at $i for $maxApproximatedScore added to $res / $fact between (${(res - maxApproximatedScore) / (fact + maxApproximatedScore)}) and (${(res + maxApproximatedScore) / (fact + maxApproximatedScore)}) to $realThreshold")
+									}
+									break
+								}
+							}
+							
+							for (j <- index) {
+								val logFactorJ = logFactor(j)
+								// Compute the weight
+								var weight = (mergedVector.length - i) * mergedVector(i) * math.max(1.0 / mergedVector.length, logMergedVectorI - logFactorJ)
+								
+								if (weight.isInfinity) weight = (mergedVector.length - i) * mergedVector(i)
+								else if (weight.isNaN) weight = 1.0
+								
+								res += weight * weight * (if (factor(i) >= factor(j)) 1.0 else -1.0)
+								fact += weight * weight
+							}
+							if (index.nonEmpty) {
+								index = index.tail
+							}
+						}
+						
+						score.synchronized {
+							if (score > (res / fact)) {
+								score = res / fact
+							}
+						}
+					}
+				}
+				mergedVector(0) * score
+			} else {
+				mergedVector(0)
+			}
+		}
+		
+		def spearmanCorrelation(mergedVector: DenseVector[Double], factors: List[DenseVector[Double]]): Double = {
+			def toRanks(vector: DenseVector[Double]): DenseVector[Double] = {
+				DenseVector(vector.iterator.toList.sortWith((v1, v2) => v1._2 > v2._2).zipWithIndex.sortWith(_._1._1 < _._1._1).map(_._2.toDouble).toArray)
+			}
+			
+			val mergedVectorRanks = toRanks(mergedVector)
+			
+			(for (factor <- factors) yield {
+				val factorRanks = toRanks(factor)
+				1 - ((6 * sum((mergedVectorRanks - factorRanks).mapValues(v => v * v))) / (factor.length * (factor.length * factor.length - 1)))
+			}).min
+		}
+	}
 }
 
 class CoupledCP(val decompositions: Array[ALS], commonDimensions: Array[Int]) extends mulot.core.tensordecomposition.cp.ALS[Tensor, Array[DenseMatrix[Double]], Array[Map[String, Array[Map[Any, Double]]]]]
 	with Logging {
 	
 	override type Return = CoupledCP
+	override type LambdaType = Array[Double]
 	override protected var rank: Int = 0
 	protected var threshold: Double = 0.5
 	override private[mulot] var tensor: Tensor = null
 	override private[mulot] var convergenceMethod: (Kruskal, Kruskal, Boolean) => Double = null
+	private[mulot] var mergingScore: (DenseVector[Double], List[DenseVector[Double]]) => Double = CoupledCP.MergingScores.approximatedWeightedKendallCorrelation(this.threshold)
+	
+	var mergingScores: List[Double] = List[Double]()
 	
 	def withThreshold(threshold: Double): Return = {
 		val newObject = this.copy()
@@ -37,9 +199,16 @@ class CoupledCP(val decompositions: Array[ALS], commonDimensions: Array[Int]) ex
 		newObject
 	}
 	
+	def withMergingScore(mergingScore: (DenseVector[Double], List[DenseVector[Double]]) => Double): Return = {
+		val newObject = this.copy()
+		newObject.mergingScore = mergingScore
+		newObject
+	}
+	
 	override protected def internalCopy(): Return = {
 		val newDecomposition = new CoupledCP(decompositions, commonDimensions)
 		newDecomposition.threshold = this.threshold
+		newDecomposition.mergingScore = this.mergingScore
 		newDecomposition
 	}
 	
@@ -67,41 +236,48 @@ class CoupledCP(val decompositions: Array[ALS], commonDimensions: Array[Int]) ex
 		val decompositionResults = for (decomposition <- decompositions) yield decomposition.execute()
 		val begin = System.currentTimeMillis()
 		val newFactorVectors = for (decomposition <- decompositions) yield (for (_ <- 0 until decomposition.tensor.order) yield List[DenseVector[Double]]()).toArray
-		// Get vectors of first decomposition
-		val commonDimension1 = commonDimensions.head
-		val matrix1 = decompositionResults(0).factorMatrices(commonDimension1)
-		var vectorsList = (for (r1 <- 0 until matrix1.cols) yield {
-			val dimensionsIndices = Array.ofDim[Int](decompositions.length)
-			dimensionsIndices(0) = r1
-			(dimensionsIndices, matrix1(::, r1))
-		}).toList
-		// Combine with vectors of all the other decompositions
-		for (decomposition2Index <- commonDimensions.indices if decomposition2Index > 0) {
-			val commonDimension2 = commonDimensions(decomposition2Index)
-			val matrix2 = decompositionResults(decomposition2Index).factorMatrices(commonDimension2)
+		
+		// Merge factors
+		val ranksAdvance = Array.fill[Int](decompositions.length){0}
+		var vectorsList = List[(Array[Int], DenseVector[Double])]()
+		var over = false
+		while (!over) {
+			// Get factors of individual decompositions
+			val factorsToMerge = (for (i <- ranksAdvance.indices) yield {
+				val vector = decompositionResults(i).A(commonDimensions(i))(::, ranksAdvance(i))
+				// Normalize vector
+				vector / max(vector)
+			}).toList
 			
-			var newVectorsList = List[(Array[Int], DenseVector[Double])]()
-			for (r2 <- 0 until matrix2.cols) {
-				val otherVector = matrix2(::, r2)
-				for ((dimensionsIndices, vector) <- vectorsList) {
-					val newVector = (vector *:* otherVector).mapValues(x => if (x.isNaN) 0.0 else x)
-					
-					val newDimensionsIndices = dimensionsIndices.clone()
-					newDimensionsIndices(decomposition2Index) = r2
-					newVectorsList +:= (newDimensionsIndices, newVector)
+			// Merge vector
+			val mergedVector = factorsToMerge.reduce(min(_, _)).mapValues(x => if (x.isNaN) 0.0 else x)
+			
+			// Compute score
+			val score = mergingScore(mergedVector, factorsToMerge)
+			mergingScores :+= score
+			
+			if (score > threshold) {
+				vectorsList :+= (ranksAdvance.clone(), mergedVector)
+			}
+			
+			// Update ranks advance
+			var i = 0
+			var ok = false
+			while (!ok && i < decompositions.length) {
+				ranksAdvance(i) += 1
+				if (ranksAdvance(i) >= decompositions(i).rank) {
+					ranksAdvance(i) = 0
+					i += 1
+				} else {
+					ok = true
 				}
 			}
-			vectorsList = newVectorsList
-		}
-		// Filter vectors that do not represent enough information
-		vectorsList = vectorsList.filter(e => {
-			val distances = for (i <- e._1.indices) yield {
-				val v = decompositionResults(i).factorMatrices(commonDimensions(i))(::, e._1(i))
-				max(v)
+			if (!ok) {
+				over = true
 			}
-			logger.info(s"Similarity among ${e._1.mkString(",")} = ${max(e._2) / distances.product}")
-			(max(e._2) / distances.product) > threshold 
-		})
+		}
+		
+		logger.info(s"Similarity among ${mergingScores.mkString(", ")}")
 		
 		// Add remaining vectors to result
 		for ((dimensionsIndices, vector) <- vectorsList) {
@@ -121,8 +297,7 @@ class CoupledCP(val decompositions: Array[ALS], commonDimensions: Array[Int]) ex
 			for (vectors <- result if vectors.nonEmpty) yield {
 				val matrix = DenseMatrix.zeros[Double](vectors.head.length, vectors.length)
 				for (i <- vectors.indices) {
-					val vector = vectors(i)
-					matrix(::, i) := vector
+					matrix(::, i) := vectors(i)
 				}
 				matrix
 			}
@@ -155,13 +330,7 @@ class CoupledCP(val decompositions: Array[ALS], commonDimensions: Array[Int]) ex
 			newDecomposition.execute()
 		}
 		val finalFactorMatrices = (for (finalDecompositionResult <- finalDecompositionResults) yield finalDecompositionResult.A).toArray
-		val finalLambdas = Array.fill(newRank){1.0}
-		for (finalDecompositionResult <- finalDecompositionResults) {
-			for (r <- 0 until newRank) {
-				finalLambdas(r) *= finalDecompositionResult.lambdas(r)
-			}
-		}
-		
+		val finalLambdas: Array[Array[Double]] = finalDecompositionResults.map(_.lambdas).toArray
 		
 		Kruskal(finalFactorMatrices, finalLambdas, None)
 	}

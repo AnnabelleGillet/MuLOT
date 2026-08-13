@@ -4,9 +4,9 @@ trait DecompositionResult[T1] {
 	val factorMatrices: Array[T1]
 }
 
-trait AbstractKruskal[FactorMatricesType] extends DecompositionResult[FactorMatricesType] {
+trait AbstractKruskal[FactorMatricesType, LambdaType] extends DecompositionResult[FactorMatricesType] {
 	val A: Array[FactorMatricesType]
-	val lambdas: Array[Double]
+	val lambdas: Array[LambdaType]
 	val corcondia: Option[Double]
 	
 	override val factorMatrices: Array[FactorMatricesType] = A

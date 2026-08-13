@@ -23,7 +23,15 @@ object ALS extends Logging {
 		
 		def gaussian(tensor: Tensor, rank: Int): Array[DenseMatrix[Double]] = {
 			(for (i <- 0 until tensor.order) yield {
-				val matrix = abs(DenseMatrix.rand(tensor.dimensionsSize(i), rank, breeze.stats.distributions.Gaussian(0.01, 1.0)))
+				val matrix = abs(DenseMatrix.rand(tensor.dimensionsSize(i), rank, breeze.stats.distributions.Gaussian(/*0.01, 1.0*/0.1, 1000.0)))
+				matrix /= max(matrix)
+				matrix
+			}).toArray
+		}
+		
+		def uniform(tensor: Tensor, rank: Int): Array[DenseMatrix[Double]] = {
+			(for (i <- 0 until tensor.order) yield {
+				val matrix = abs(DenseMatrix.rand(tensor.dimensionsSize(i), rank, breeze.stats.distributions.Uniform(/*0.01, 1.0*/ 0.1, 1000.0)))
 				matrix /= max(matrix)
 				matrix
 			}).toArray
@@ -47,7 +55,7 @@ object ALS extends Logging {
 		 * the matrices are completely different, and they are the same at 1). This function returns 1 minus the factor
 		 * match score.
 		 */
-		def factorMatchScore(previousResult: AbstractKruskal[DenseMatrix[Double]], currentResult: AbstractKruskal[DenseMatrix[Double]], print: Boolean = true): Double = {
+		def factorMatchScore(previousResult: AbstractKruskal[DenseMatrix[Double], Double], currentResult: AbstractKruskal[DenseMatrix[Double], Double], print: Boolean = true): Double = {
 			val begin = System.currentTimeMillis()
 			val fms = 1.0 - computeFactorMatchScore(currentResult.factorMatrices, currentResult.lambdas, previousResult.factorMatrices, previousResult.lambdas)
 			if (print) {
@@ -153,6 +161,7 @@ class ALS private(override var tensor: Tensor, override var rank: Int)
 		with Logging {
 	
 	type Return = ALS
+	override type LambdaType = Double
 	
 	private[mulot] var initializer: (Tensor, Int) => Array[DenseMatrix[Double]] = ALS.Initializers.gaussian
 	override private[mulot] var convergenceMethod: (Kruskal, Kruskal, Boolean) => Double = ALS.ConvergenceMethods.factorMatchScore

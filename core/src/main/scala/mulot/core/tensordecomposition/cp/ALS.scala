@@ -6,6 +6,7 @@ import mulot.core.tensordecomposition.{AbstractKruskal, Decomposition}
 trait ALS[TensorType <: Tensor, FactorMatricesType, ExplicitValuesType] extends Decomposition[TensorType, FactorMatricesType, ExplicitValuesType] {
 	
 	type Return <: ALS[TensorType, FactorMatricesType, ExplicitValuesType]
+	type LambdaType
 	type DR = Kruskal
 	
 	protected var rank: Int
@@ -24,7 +25,7 @@ trait ALS[TensorType <: Tensor, FactorMatricesType, ExplicitValuesType] extends 
 		newDecomposition
 	}
 	
-	case class Kruskal(override val A: Array[FactorMatricesType], override val lambdas: Array[Double], override val corcondia: Option[Double]) extends AbstractKruskal[FactorMatricesType] {
+	case class Kruskal(override val A: Array[FactorMatricesType], override val lambdas: Array[LambdaType], override val corcondia: Option[Double]) extends AbstractKruskal[FactorMatricesType, LambdaType] {
 		/**
 		 * Transform this Kruskal object to a result with explicit values.
 		 */

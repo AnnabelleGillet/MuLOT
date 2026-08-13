@@ -32,7 +32,7 @@ class ALSTest extends AnyFunSuite {
 		}
 	}
 	
-	test("test coupled CP ALS") {
+	test("test De Lathauwer coupled CP ALS") {
 		implicit val spark = SparkSession.builder().master("local[*]").getOrCreate()
 		spark.sparkContext.setLogLevel("WARN")
 		

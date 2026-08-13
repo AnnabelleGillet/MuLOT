@@ -73,7 +73,7 @@ object CoupledALS extends Logging {
 		 * the matrices are completely different, and they are the same at 1). This function returns 1 minus the factor
 		 * match score.
 		 */
-		def factorMatchScore(previousResult: AbstractKruskal[Array[ExtendedBlockMatrix]], currentResult: AbstractKruskal[Array[ExtendedBlockMatrix]], print: Boolean = true): Double = {
+		def factorMatchScore(previousResult: AbstractKruskal[Array[ExtendedBlockMatrix], Double], currentResult: AbstractKruskal[Array[ExtendedBlockMatrix], Double], print: Boolean = true): Double = {
 			val begin = System.currentTimeMillis()
 			val fms = 1.0 - (for (i <- previousResult.factorMatrices.indices) yield {
 				ExtendedBlockMatrix.factorMatchScore(currentResult.factorMatrices(i), currentResult.lambdas, previousResult.factorMatrices(i), previousResult.lambdas)
@@ -96,11 +96,12 @@ object CoupledALS extends Logging {
  * @param commonDimensions
  * @param spark
  */
-class CoupledALS private(val tensors: Array[Tensor], override var rank: Int, val referencingTensors: Array[Seq[(Tensor, Int)]], val commonDimensions: Array[Map[Int, Int]])
+class CoupledALS private[mulot](val tensors: Array[Tensor], override var rank: Int, val referencingTensors: Array[Seq[(Tensor, Int)]], val commonDimensions: Array[Map[Int, Int]])
 						(implicit spark: SparkSession)
 	extends mulot.core.tensordecomposition.cp.ALS[Tensor, Array[ExtendedBlockMatrix], Array[Map[String, DataFrame]]]
 	with Logging {
 	type Return = CoupledALS
+	override type LambdaType = Double
 	
 	override var tensor: Tensor = _
 	private[mulot] var highRank: Option[Boolean] = None
@@ -148,6 +149,133 @@ class CoupledALS private(val tensors: Array[Tensor], override var rank: Int, val
 		newDecomposition
 	}
 	
+	override def execute(): Kruskal = {
+		val nbColsPerBlock = 1024
+		
+		val tensorsData = for (t <- tensors) yield t.data.cache()
+		
+		// Factor matrices initialization
+		val factorMatrices = initializer(tensors, rank)
+		var lastIterationFactorMatrices = new Array[Array[ExtendedBlockMatrix]](tensors.length)
+		
+		// Lambda initialization
+		var lambdas = new Array[Double](rank)
+		var lastIterationLambdas = new Array[Double](rank)
+		var lastIterationKruskal = Kruskal(factorMatrices, lambdas, None)
+		
+		var convergence = false
+		var nbIterations = 1
+		var begin = System.currentTimeMillis()
+		
+		def internalIteration(tensorIndexes: Array[Int], dimensionIndexes: Array[Int]): Unit = {
+			var factorMatrix = factorMatrices(tensorIndexes.head)(dimensionIndexes.head)
+			val v = (for (k <- tensorIndexes.indices) yield {
+				(for (l <- factorMatrices(k).indices if l != dimensionIndexes(k)) yield {
+					factorMatrices(k)(l)
+				}).reduce((m1, m2) => (m1.transpose.multiply(m1)).hadamard(m2.transpose.multiply(m2)))
+			}).reduce((m1, m2) => m1.add(m2))
+			val vInv = v.inverse()
+			
+			// MTTKRP
+			for (j <- 0 until rank) {
+				lambdas(j) = 0.0
+			}
+			factorMatrix = (for (i <- tensorIndexes.indices) yield {
+				if (rank > nbColsPerBlock) {
+					ExtendedBlockMatrix.mttkrpHighRankDataFrame(tensorsData(i),
+						(for (k <- factorMatrices(tensorIndexes(i)).indices if dimensionIndexes(i) != k) yield factorMatrices(tensorIndexes(i))(k)).toArray,
+						(for (k <- tensors(tensorIndexes(i)).dimensionsSize.indices if dimensionIndexes(i) != k) yield tensors(tensorIndexes(i)).dimensionsSize(k)).toArray,
+						dimensionIndexes(i),
+						tensors(tensorIndexes(i)).dimensionsSize(dimensionIndexes(i)),
+						rank,
+						tensors(tensorIndexes(i)).valueColumnName
+					)
+				} else {
+					ExtendedBlockMatrix.mttkrpDataFrame(tensorsData(i),
+						(for (k <- factorMatrices(tensorIndexes(i)).indices if dimensionIndexes(i) != k) yield factorMatrices(tensorIndexes(i))(k)).toArray,
+						(for (k <- tensors(tensorIndexes(i)).dimensionsSize.indices if dimensionIndexes(i) != k) yield tensors(tensorIndexes(i)).dimensionsSize(k)).toArray,
+						dimensionIndexes(i),
+						tensors(tensorIndexes(i)).dimensionsSize(dimensionIndexes(i)),
+						rank,
+						tensors(tensorIndexes(i)).valueColumnName
+					)
+				}
+			}).reduce(_.add(_))
+			
+			factorMatrix = (vInv.multiply(factorMatrix.transpose)).transpose
+			
+			if (nonNegativity) {
+				factorMatrix = ExtendedBlockMatrix.fromBreeze(factorMatrix.toSparseBreeze().map(v => if (v < 0.0) 0.0 else v))
+			}
+			
+			if (norm == Norms.L2) {
+				lambdas = factorMatrix.normL2()
+			} else {
+				lambdas = factorMatrix.normL1()
+			}
+			factorMatrix = factorMatrix.multiplyByArray(lambdas.map(1.0 / _))
+			
+			for (i <- tensorIndexes.indices) {
+				factorMatrices(tensorIndexes(i))(dimensionIndexes(i)) = factorMatrix
+			}
+		}
+		
+		while (!convergence) {
+			val cpBegin = System.currentTimeMillis()
+			if (nbIterations % printEvery == 0) {
+				logger.info(s"iteration $nbIterations")
+			}
+			
+			// Start with common dimensions
+			for (i <- referencingTensors.indices) {
+				internalIteration(referencingTensors(i).map(r => tensors.indexOf(r._1)).toArray, referencingTensors(i).map(_._2).toArray)
+			}
+			
+			// Continue with all the other dimensions that are not shared
+			for (i <- tensors.indices; j <- 0 until tensors(i).order if !commonDimensions(i).contains(j)) {
+				internalIteration(Array(i), Array(j))
+			}
+			
+			// Compute the convergence score
+			if (nbIterations > 1 && computeConvergence) {
+				val currentKruskal = Kruskal(for (m <- factorMatrices) yield m, for (l <- lambdas) yield l, None)
+				val convergenceScore = convergenceMethod(lastIterationKruskal, currentKruskal, nbIterations % printEvery == 0)
+				if (convergenceScore <= convergenceThreshold) {
+					convergence = true
+				}
+				lastIterationKruskal = currentKruskal
+			} else {
+				lastIterationKruskal = Kruskal(for (m <- factorMatrices) yield m, for (l <- lambdas) yield l, None)
+			}
+			
+			lastIterationFactorMatrices = for (m <- factorMatrices) yield {for (n <- m) yield n}
+			lastIterationLambdas = for (l <- lambdas) yield l
+			
+			if (nbIterations % printEvery == 0) {
+				logger.info(s"iteration $nbIterations computed in ${(System.currentTimeMillis() - cpBegin).toDouble / 1000.0}s")
+			}
+			
+			if (nbIterations >= maxIterations) {
+				convergence = true
+			} else {
+				nbIterations += 1
+			}
+		}
+		logger.info(s"Coupled ALS computed in $nbIterations iterations (${(System.currentTimeMillis() - begin).toDouble / 1000.0}s)")
+		var corcondia: Option[Double] = None
+		Kruskal(factorMatrices, lambdas, corcondia)
+	}
+}
+
+/**
+ * Improved version of the De Lathauwer algorithm allowing to converge faster and to produce more stable results.
+ *
+ * @param _tensors
+ * @param _rank
+ * @param _referencingTensors
+ * @param _commonDimensions
+ */
+class ImprovedCoupledALS private[mulot](_tensors: Array[Tensor], _rank: Int, _referencingTensors: Array[Seq[(Tensor, Int)]], _commonDimensions: Array[Map[Int, Int]])(implicit spark: SparkSession) extends CoupledALS(_tensors, _rank, _referencingTensors, _commonDimensions) {
 	override def execute(): Kruskal = {
 		val nbColsPerBlock = 1024
 		
@@ -249,7 +377,9 @@ class CoupledALS private(val tensors: Array[Tensor], override var rank: Int, val
 				lastIterationKruskal = Kruskal(for (m <- factorMatrices) yield m, for (l <- lambdas) yield l, None)
 			}
 			
-			lastIterationFactorMatrices = for (m <- factorMatrices) yield {for (n <- m) yield n}
+			lastIterationFactorMatrices = for (m <- factorMatrices) yield {
+				for (n <- m) yield n
+			}
 			lastIterationLambdas = for (l <- lambdas) yield l
 			
 			if (nbIterations % printEvery == 0) {

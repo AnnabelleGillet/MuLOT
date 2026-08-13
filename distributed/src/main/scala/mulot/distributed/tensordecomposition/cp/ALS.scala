@@ -38,7 +38,7 @@ object ALS extends Logging {
 		 * the matrices are completely different, and they are the same at 1). This function returns 1 minus the factor
 		 * match score.
 		 */
-		def factorMatchScore(previousResult: AbstractKruskal[ExtendedBlockMatrix], currentResult: AbstractKruskal[ExtendedBlockMatrix], print: Boolean = true): Double = {
+		def factorMatchScore(previousResult: AbstractKruskal[ExtendedBlockMatrix, Double], currentResult: AbstractKruskal[ExtendedBlockMatrix, Double], print: Boolean = true): Double = {
 			val begin = System.currentTimeMillis()
 			val fms = 1.0 - ExtendedBlockMatrix.factorMatchScore(currentResult.factorMatrices, currentResult.lambdas, previousResult.factorMatrices, previousResult.lambdas)
 			if (print) {
@@ -54,6 +54,7 @@ class ALS private(override var tensor: Tensor, override var rank: Int)(implicit 
 		with Logging {
 	
 	override type Return = ALS
+	override type LambdaType = Double
 	
 	private[mulot] var highRank: Option[Boolean] = None
 	private[mulot] var initializer: (Tensor, Int) => Array[ExtendedBlockMatrix] = ALS.Initializers.gaussian

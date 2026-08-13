@@ -124,7 +124,7 @@ val coupledCPDecomposition = CoupledALS(Array(tensor1, tensor2), rank, Array(Cou
 ```
 The result is an `Array` of `Array` of factor matrices, representing the factor matrices of each tensor.  
 
-### Coupled ALS CANDECOMP/PARAFAC
+### Coupled ALS CANDECOMP/PARAFAC (KrasisCP)
 An other version of coupled CP decomposition that we propose is available. It takes as input an Array of non-coupled CP decomposition and an Array indicating the coupled dimension for each tensor associated to the input decompositions. 
 ```scala
 val coupledCPDecomposition = new CoupledCP(Array(decomposition1, decomposition2), Array(0, 0))
@@ -135,6 +135,8 @@ The result is an `Array` of `Array` of factor matrices, representing the factor 
 Our implementation of the CP decomposition has been tested to compare its execution time with other CP decomposition libraries made for large-scale tensors. The notebooks can be found in the `experiments` folder. MuLOT outperforms these libraries at large-scale, while being suitable for small and medium tensors analysis. TensorLy is used as a reference of non-distributed library. 3-order tensors were used for this experiment.
 
 ![Benchmark results](experiments/CPALS_benchmark_dim3.png?raw=true "Benchmark results")
+
+We have also studied our algorithm computing the coupled CANDECOMP/PARAFAC decomposition. We evaluate its ability to find clusters against the [De Lathauwer algorithm](https://epubs.siam.org/doi/10.1137/140956865), and the relevance of the merging condition for the common dimensions. 
 
 ## Roadmap
 - The HALS-NTD algorithm for the Tucker decomposition will be developed. It enforces the non-negativity constraint;
